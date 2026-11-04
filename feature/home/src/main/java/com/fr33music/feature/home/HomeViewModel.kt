@@ -9,6 +9,10 @@ import com.fr33music.core.domain.model.Track
 import com.fr33music.core.extractor.ExtractorInfo
 import com.fr33music.core.extractor.SearchSource
 import com.fr33music.core.player.PlayerRepository
+import com.fr33music.core.updater.ApkInstaller
+import com.fr33music.core.updater.UpdateChecker
+import com.fr33music.core.updater.UpdateDownloader
+import com.fr33music.core.updater.model.UpdateInfo
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -26,7 +31,14 @@ data class HomeUiState(
     val recommendations: List<Track> = emptyList(),
     val showSettings: Boolean = false,
     val extractorVersion: String = ExtractorInfo.VERSION,
-    val cacheClearedMessage: String? = null
+    val appVersion: String = "1.0.0",
+    val cacheClearedMessage: String? = null,
+    val isCheckingUpdate: Boolean = false,
+    val isDownloadingUpdate: Boolean = false,
+    val downloadProgress: Float = 0f,
+    val availableUpdate: UpdateInfo? = null,
+    val showNoUpdateToast: Boolean = false,
+    val updateError: String? = null
 )
 
 @HiltViewModel
@@ -34,19 +46,33 @@ class HomeViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val searchHistoryDao: SearchHistoryDao,
     private val searchSource: SearchSource,
-    private val playerRepository: PlayerRepository
+    private val playerRepository: PlayerRepository,
+    private val updateChecker: UpdateChecker,
+    private val updateDownloader: UpdateDownloader,
+    private val apkInstaller: ApkInstaller
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(HomeUiState())
+    private val _uiState = MutableStateFlow(
+        HomeUiState(appVersion = getAppVersionName())
+    )
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     init {
         loadRecommendations()
     }
 
+    private fun getAppVersionName(): String {
+        return try {
+            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            packageInfo.versionName ?: "1.0.0"
+        } catch (_: Exception) {
+            "1.0.0"
+        }
+    }
+
     fun loadRecommendations() {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true)
+            _uiState.update { it.copy(isLoading = true) }
 
             // Obtener búsquedas recientes
             val recentSearches = searchHistoryDao.getRecentSearches(5).first()
@@ -65,18 +91,22 @@ class HomeViewModel @Inject constructor(
             val result = searchSource.search(query)
             result.fold(
                 onSuccess = { tracks ->
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        recommendationTitle = title,
-                        recommendations = tracks
-                    )
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            recommendationTitle = title,
+                            recommendations = tracks
+                        )
+                    }
                 },
                 onFailure = {
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        recommendationTitle = title,
-                        recommendations = emptyList()
-                    )
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            recommendationTitle = title,
+                            recommendations = emptyList()
+                        )
+                    }
                 }
             )
         }
@@ -95,17 +125,17 @@ class HomeViewModel @Inject constructor(
     }
 
     fun openSettings() {
-        _uiState.value = _uiState.value.copy(showSettings = true, cacheClearedMessage = null)
+        _uiState.update { it.copy(showSettings = true, cacheClearedMessage = null, updateError = null) }
     }
 
     fun closeSettings() {
-        _uiState.value = _uiState.value.copy(showSettings = false)
+        _uiState.update { it.copy(showSettings = false) }
     }
 
     fun clearSearchHistory() {
         viewModelScope.launch {
             searchHistoryDao.clearHistory()
-            _uiState.value = _uiState.value.copy(cacheClearedMessage = "Historial de búsqueda eliminado")
+            _uiState.update { it.copy(cacheClearedMessage = "Historial de búsqueda eliminado") }
             loadRecommendations()
         }
     }
@@ -123,13 +153,84 @@ class HomeViewModel @Inject constructor(
                 context.cacheDir.deleteRecursively()
 
                 withContext(Dispatchers.Main) {
-                    _uiState.value = _uiState.value.copy(cacheClearedMessage = "Caché de red e imágenes limpiada")
+                    _uiState.update { it.copy(cacheClearedMessage = "Caché de red e imágenes limpiada") }
                 }
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
-                    _uiState.value = _uiState.value.copy(cacheClearedMessage = "Error al limpiar caché")
+                    _uiState.update { it.copy(cacheClearedMessage = "Error al limpiar caché") }
                 }
             }
         }
+    }
+
+    fun checkForUpdates() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isCheckingUpdate = true, updateError = null, showNoUpdateToast = false) }
+            val currentVersion = _uiState.value.appVersion
+            val result = updateChecker.checkForUpdate(currentVersion)
+            result.fold(
+                onSuccess = { updateInfo ->
+                    if (updateInfo != null) {
+                        _uiState.update {
+                            it.copy(
+                                isCheckingUpdate = false,
+                                availableUpdate = updateInfo
+                            )
+                        }
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                isCheckingUpdate = false,
+                                showNoUpdateToast = true
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(
+                            isCheckingUpdate = false,
+                            updateError = error.message ?: "Error al verificar actualizaciones"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val update = _uiState.value.availableUpdate ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isDownloadingUpdate = true, downloadProgress = 0f, updateError = null) }
+            val result = updateDownloader.downloadApk(update.downloadUrl) { progress ->
+                _uiState.update { it.copy(downloadProgress = progress) }
+            }
+            result.fold(
+                onSuccess = { apkFile ->
+                    _uiState.update { it.copy(isDownloadingUpdate = false, availableUpdate = null) }
+                    apkInstaller.installApk(apkFile)
+                },
+                onFailure = { error ->
+                    _uiState.update {
+                        it.copy(
+                            isDownloadingUpdate = false,
+                            updateError = "Error al descargar: ${error.message}"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun dismissUpdateDialog() {
+        _uiState.update { it.copy(availableUpdate = null) }
+    }
+
+    fun onNoUpdateToastShown() {
+        _uiState.update { it.copy(showNoUpdateToast = false) }
+    }
+
+    fun clearUpdateError() {
+        _uiState.update { it.copy(updateError = null) }
     }
 }

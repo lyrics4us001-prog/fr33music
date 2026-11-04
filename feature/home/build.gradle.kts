@@ -32,6 +32,7 @@ dependencies {
     implementation(project(":core:database"))
     implementation(project(":core:extractor"))
     implementation(project(":core:player"))
+    implementation(project(":core:updater"))
 
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)

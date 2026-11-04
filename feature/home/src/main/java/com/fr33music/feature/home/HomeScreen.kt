@@ -1,5 +1,6 @@
 package com.fr33music.feature.home
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,20 +21,26 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -55,7 +62,22 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(uiState.showNoUpdateToast) {
+        if (uiState.showNoUpdateToast) {
+            Toast.makeText(context, "Ya tienes la última versión", Toast.LENGTH_SHORT).show()
+            viewModel.onNoUpdateToastShown()
+        }
+    }
+
+    LaunchedEffect(uiState.updateError) {
+        uiState.updateError?.let { msg ->
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+            viewModel.clearUpdateError()
+        }
+    }
 
     Column(
         modifier = modifier
@@ -200,7 +222,7 @@ fun HomeScreen(
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "Fr33Music v1.0.0 (Fase 2)",
+                        text = "Fr33Music v${uiState.appVersion}",
                         style = Fr33Typography.titleMedium,
                         color = ColorTextPrimary
                     )
@@ -211,7 +233,48 @@ fun HomeScreen(
                         color = ColorTextSecondary
                     )
 
-                    Spacer(modifier = Modifier.height(Fr33Spacing.large))
+                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
+                    HorizontalDivider(color = ColorDivider, thickness = 0.5.dp)
+                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
+
+                    // Sección Actualizaciones
+                    Text(
+                        text = "Actualizaciones",
+                        style = Fr33Typography.titleSmall,
+                        color = ColorPrimary
+                    )
+                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
+
+                    Button(
+                        onClick = viewModel::checkForUpdates,
+                        enabled = !uiState.isCheckingUpdate && !uiState.isDownloadingUpdate,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(Fr33Radius.medium),
+                        colors = ButtonDefaults.buttonColors(containerColor = ColorPrimary)
+                    ) {
+                        if (uiState.isCheckingUpdate) {
+                            CircularProgressIndicator(
+                                color = ColorTextPrimary,
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(Fr33Spacing.small))
+                            Text(text = "Buscando actualizaciones...", color = ColorTextPrimary)
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.SystemUpdate,
+                                contentDescription = null,
+                                tint = ColorTextPrimary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(Fr33Spacing.small))
+                            Text(text = "Buscar actualizaciones", color = ColorTextPrimary)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
+                    HorizontalDivider(color = ColorDivider, thickness = 0.5.dp)
+                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
 
                     OutlinedButton(
                         onClick = viewModel::clearSearchHistory,
@@ -246,6 +309,102 @@ fun HomeScreen(
             confirmButton = {
                 TextButton(onClick = viewModel::closeSettings) {
                     Text(text = "Cerrar", color = ColorPrimary)
+                }
+            }
+        )
+    }
+
+    // Diálogo de Actualización disponible
+    if (uiState.availableUpdate != null) {
+        val update = uiState.availableUpdate!!
+        AlertDialog(
+            onDismissRequest = {
+                if (!uiState.isDownloadingUpdate) viewModel.dismissUpdateDialog()
+            },
+            containerColor = ColorSurface,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.SystemUpdate,
+                        contentDescription = null,
+                        tint = ColorPrimary
+                    )
+                    Spacer(modifier = Modifier.width(Fr33Spacing.small))
+                    Text(
+                        text = "Actualización disponible",
+                        color = ColorTextPrimary,
+                        style = Fr33Typography.titleMedium
+                    )
+                }
+            },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Nueva versión: ${update.versionName}",
+                        style = Fr33Typography.titleSmall,
+                        color = ColorPrimary
+                    )
+                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
+
+                    val releaseNotes = update.releaseNotes
+                    if (!releaseNotes.isNullOrBlank()) {
+                        Text(
+                            text = "Notas de la versión:",
+                            style = Fr33Typography.labelLarge,
+                            color = ColorTextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = releaseNotes,
+                            style = Fr33Typography.bodySmall,
+                            color = ColorTextTertiary,
+                            maxLines = 8,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    } else {
+                        Text(
+                            text = "Esta actualización contiene mejoras de rendimiento y corrección de errores.",
+                            style = Fr33Typography.bodyMedium,
+                            color = ColorTextSecondary
+                        )
+                    }
+
+                    if (uiState.isDownloadingUpdate) {
+                        Spacer(modifier = Modifier.height(Fr33Spacing.medium))
+                        LinearProgressIndicator(
+                            progress = { uiState.downloadProgress },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = ColorPrimary,
+                            trackColor = ColorDivider
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Descargando: ${(uiState.downloadProgress * 100).toInt()}%",
+                            style = Fr33Typography.labelSmall,
+                            color = ColorTextSecondary,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = viewModel::downloadAndInstallUpdate,
+                    enabled = !uiState.isDownloadingUpdate,
+                    colors = ButtonDefaults.buttonColors(containerColor = ColorPrimary)
+                ) {
+                    Text(
+                        text = if (uiState.isDownloadingUpdate) "Descargando..." else "Actualizar",
+                        color = ColorTextPrimary
+                    )
+                }
+            },
+            dismissButton = {
+                if (!uiState.isDownloadingUpdate) {
+                    TextButton(onClick = viewModel::dismissUpdateDialog) {
+                        Text(text = "Cancelar", color = ColorTextSecondary)
+                    }
                 }
             }
         )
