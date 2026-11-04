@@ -56,12 +56,16 @@ class Fr33MusicPlayerService : MediaSessionService() {
                 return super.getAvailableCommands().buildUpon()
                     .add(COMMAND_SEEK_TO_NEXT)
                     .add(COMMAND_SEEK_TO_PREVIOUS)
+                    .add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                    .add(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
                     .build()
             }
 
             override fun isCommandAvailable(command: Int): Boolean {
                 return command == COMMAND_SEEK_TO_NEXT ||
                         command == COMMAND_SEEK_TO_PREVIOUS ||
+                        command == COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
+                        command == COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM ||
                         super.isCommandAvailable(command)
             }
 
@@ -70,6 +74,14 @@ class Fr33MusicPlayerService : MediaSessionService() {
             }
 
             override fun seekToPrevious() {
+                serviceScope.launch { playerRepository.previous() }
+            }
+
+            override fun seekToNextMediaItem() {
+                serviceScope.launch { playerRepository.next() }
+            }
+
+            override fun seekToPreviousMediaItem() {
                 serviceScope.launch { playerRepository.previous() }
             }
         }

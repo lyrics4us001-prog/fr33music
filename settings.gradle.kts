@@ -26,6 +26,7 @@ rootProject.name = "Fr33Music"
 include(":app")
 include(":core:designsystem")
 include(":core:domain")
+include(":core:database")
 include(":core:extractor")
 include(":core:player")
 include(":feature:home")

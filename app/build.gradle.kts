@@ -46,6 +46,7 @@ android {
 dependencies {
     implementation(project(":core:designsystem"))
     implementation(project(":core:domain"))
+    implementation(project(":core:database"))
     implementation(project(":core:extractor"))
     implementation(project(":core:player"))
     implementation(project(":feature:home"))

@@ -25,6 +25,7 @@ android {
 
 dependencies {
     implementation(project(":core:domain"))
+    implementation(project(":core:database"))
     implementation(project(":core:extractor"))
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
@@ -33,6 +34,9 @@ dependencies {
     implementation(libs.media3.session)
     implementation(libs.media3.ui)
     implementation(libs.media3.datasource.okhttp)
+
+    // Coil para carga de carátulas en segundo plano / notificación
+    implementation(libs.coil.compose)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

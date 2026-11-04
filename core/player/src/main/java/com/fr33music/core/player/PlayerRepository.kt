@@ -8,6 +8,7 @@ interface PlayerRepository {
     suspend fun play(track: Track)
     suspend fun setQueue(list: List<Track>, startIndex: Int = 0)
     fun togglePlayPause()
+    fun toggleShuffle()
     suspend fun next()
     suspend fun previous()
     fun seekTo(positionMs: Long)

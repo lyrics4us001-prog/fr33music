@@ -29,6 +29,7 @@ android {
 dependencies {
     implementation(project(":core:designsystem"))
     implementation(project(":core:domain"))
+    implementation(project(":core:database"))
     implementation(project(":core:player"))
 
     val composeBom = platform(libs.androidx.compose.bom)

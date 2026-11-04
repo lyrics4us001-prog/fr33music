@@ -6,8 +6,10 @@ data class PlaybackState(
     val queue: List<Track> = emptyList(),
     val currentIndex: Int = -1,
     val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
     val isPlaying: Boolean = false,
     val isLoading: Boolean = false,
+    val isShuffle: Boolean = false,
     val error: String? = null
 ) {
     val currentTrack: Track?

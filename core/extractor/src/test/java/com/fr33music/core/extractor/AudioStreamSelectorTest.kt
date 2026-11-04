@@ -95,6 +95,61 @@ class AudioStreamSelectorTest {
     }
 
     @Test
+    fun `OPUS disponible en rango optimo 128-160 kbps - prioriza 160 sobre 256`() {
+        val candidates = listOf(
+            AudioCandidate(
+                url = "https://audio.stream/opus_256",
+                mime = "audio/webm",
+                bitrateKbps = 256,
+                format = AudioFormat.OPUS
+            ),
+            AudioCandidate(
+                url = "https://audio.stream/opus_160",
+                mime = "audio/webm",
+                bitrateKbps = 160,
+                format = AudioFormat.OPUS
+            ),
+            AudioCandidate(
+                url = "https://audio.stream/opus_128",
+                mime = "audio/webm",
+                bitrateKbps = 128,
+                format = AudioFormat.OPUS
+            )
+        )
+
+        val selected = AudioStreamSelector.selectBestStream(candidates)
+
+        assertNotNull(selected)
+        assertEquals(AudioFormat.OPUS, selected?.format)
+        assertEquals(160, selected?.bitrateKbps)
+        assertEquals("https://audio.stream/opus_160", selected?.url)
+    }
+
+    @Test
+    fun `OPUS fuera del rango optimo - selecciona el mas cercano a 160kbps`() {
+        val candidates = listOf(
+            AudioCandidate(
+                url = "https://audio.stream/opus_50",
+                mime = "audio/webm",
+                bitrateKbps = 50,
+                format = AudioFormat.OPUS
+            ),
+            AudioCandidate(
+                url = "https://audio.stream/opus_96",
+                mime = "audio/webm",
+                bitrateKbps = 96,
+                format = AudioFormat.OPUS
+            )
+        )
+
+        val selected = AudioStreamSelector.selectBestStream(candidates)
+
+        assertNotNull(selected)
+        assertEquals(AudioFormat.OPUS, selected?.format)
+        assertEquals(96, selected?.bitrateKbps)
+    }
+
+    @Test
     fun `parseFormat reconoce OPUS y M4A correctamente`() {
         assertEquals(AudioFormat.OPUS, AudioStreamSelector.parseFormat("WEBMA_OPUS", "audio/webm"))
         assertEquals(AudioFormat.OPUS, AudioStreamSelector.parseFormat("opus", "audio/opus"))

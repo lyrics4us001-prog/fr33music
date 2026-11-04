@@ -64,12 +64,21 @@ class NewPipeDownloader(
         val responseBodyString = responseBodyBytes.decodeToString()
         val responseHeaders = okResponse.headers.toMultimap()
 
-        // Capture any set-cookie headers
+        // Capture any set-cookie headers safely
         val setCookieHeaders = okResponse.headers("Set-Cookie")
         for (cookie in setCookieHeaders) {
-            val parts = cookie.split(";")[0].split("=")
-            if (parts.size >= 2) {
-                setCookie(parts[0].trim(), parts[1].trim())
+            try {
+                val firstPart = cookie.split(";").firstOrNull() ?: continue
+                val eqIdx = firstPart.indexOf('=')
+                if (eqIdx > 0) {
+                    val name = firstPart.substring(0, eqIdx).trim()
+                    val value = firstPart.substring(eqIdx + 1).trim()
+                    if (name.isNotEmpty()) {
+                        setCookie(name, value)
+                    }
+                }
+            } catch (_: Exception) {
+                // Ignorar cookies malformadas
             }
         }
 
@@ -83,7 +92,7 @@ class NewPipeDownloader(
     }
 
     companion object {
-        const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         const val REFERER_YOUTUBE = "https://www.youtube.com/"
 
         fun defaultClient(): OkHttpClient {

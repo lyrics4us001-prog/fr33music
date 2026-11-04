@@ -35,6 +35,7 @@ fun TrackRow(
     ) {
         TrackThumbnail(
             thumbnailUrl = track.thumbnailUrl,
+            trackId = track.trackId,
             contentDescription = track.title,
             size = 56.dp
         )
