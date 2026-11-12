@@ -45,6 +45,10 @@ android {
             }
         }
     }
+	
+	lint {
+        disable += "Instantiatable"
+    }
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
