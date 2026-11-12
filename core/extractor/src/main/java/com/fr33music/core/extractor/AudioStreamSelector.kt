@@ -13,8 +13,8 @@ data class AudioCandidate(
 object AudioStreamSelector {
 
     /**
-     * Prioritizes OPUS streams with optimal bitrate (around 128kbps - 160kbps).
-     * If OPUS is not available, falls back to M4A.
+     * Prioritizes OPUS streams with optimal bitrate (around 96kbps - 128kbps for fast streaming start, up to 160kbps).
+     * If OPUS is not available, falls back to M4A with similar logic.
      * Returns null if no suitable OPUS or M4A stream is found.
      */
     fun selectBestStream(candidates: List<AudioCandidate>): AudioCandidate? {
@@ -22,25 +22,32 @@ object AudioStreamSelector {
 
         val opusStreams = candidates.filter { it.format == AudioFormat.OPUS }
         if (opusStreams.isNotEmpty()) {
-            // Priorizar stream en rango óptimo (128kbps - 160kbps Opus).
-            // Si hay varios en ese rango, tomar el de mayor bitrate (ej. 160kbps).
-            val inOptimalRange = opusStreams.filter { it.bitrateKbps in 128..160 }
-            if (inOptimalRange.isNotEmpty()) {
-                return inOptimalRange.maxByOrNull { it.bitrateKbps }
-            }
-            // Si ninguno está en el rango 128..160, tomar el más cercano a 160kbps
-            return opusStreams.minByOrNull { abs(it.bitrateKbps - 160) }
+            return chooseOptimalStream(opusStreams)
         }
 
-        val m4aStreams = candidates
-            .filter { it.format == AudioFormat.M4A }
-            .sortedByDescending { it.bitrateKbps }
-
+        val m4aStreams = candidates.filter { it.format == AudioFormat.M4A }
         if (m4aStreams.isNotEmpty()) {
-            return m4aStreams.first()
+            return chooseOptimalStream(m4aStreams)
         }
 
         return null
+    }
+
+    private fun chooseOptimalStream(streams: List<AudioCandidate>): AudioCandidate {
+        // 1. Si hay streams en 96kbps..128kbps, priorizarlos para iniciar más rápido (seleccionando 128 si existe, o 96)
+        val fastRange = streams.filter { it.bitrateKbps in 96..128 }
+        if (fastRange.isNotEmpty()) {
+            return fastRange.maxByOrNull { it.bitrateKbps }!!
+        }
+
+        // 2. Si no hay en 96..128, buscar en rango 128..160 (priorizando el menor dentro del rango para agilidad)
+        val standardRange = streams.filter { it.bitrateKbps in 128..160 }
+        if (standardRange.isNotEmpty()) {
+            return standardRange.minByOrNull { it.bitrateKbps }!!
+        }
+
+        // 3. Fallback: la más cercana a 128kbps
+        return streams.minByOrNull { abs(it.bitrateKbps - 128) }!!
     }
 
     fun parseFormat(formatName: String?, mimeType: String?): AudioFormat {

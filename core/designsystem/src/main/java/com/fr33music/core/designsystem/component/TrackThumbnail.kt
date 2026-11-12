@@ -72,11 +72,19 @@ fun TrackThumbnail(
         }
     }
 
-    val imageModel: Any? = remember(hdUrl, localFile) {
-        if (localFile != null && localFile.exists()) {
+    val imageModel: Any? = remember(hdUrl, localFile, trackId) {
+        if (localFile != null && localFile.exists() && localFile.length() > 0) {
             localFile
         } else if (hdUrl?.startsWith("file:") == true) {
-            hdUrl
+            val path = android.net.Uri.parse(hdUrl).path ?: hdUrl.removePrefix("file://")
+            val f = File(path)
+            if (f.exists() && f.length() > 0) {
+                f
+            } else if (!trackId.isNullOrBlank()) {
+                "https://i.ytimg.com/vi/$trackId/hqdefault.jpg"
+            } else {
+                null
+            }
         } else {
             hdUrl
         }

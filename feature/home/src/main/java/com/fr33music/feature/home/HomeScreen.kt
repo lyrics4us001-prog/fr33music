@@ -1,6 +1,7 @@
 package com.fr33music.feature.home
 
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +37,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -48,6 +52,7 @@ import com.fr33music.core.designsystem.component.LoadingSkeleton
 import com.fr33music.core.designsystem.component.TrackRow
 import com.fr33music.core.designsystem.theme.ColorBackground
 import com.fr33music.core.designsystem.theme.ColorDivider
+import com.fr33music.core.designsystem.theme.ColorError
 import com.fr33music.core.designsystem.theme.ColorPrimary
 import com.fr33music.core.designsystem.theme.ColorSurface
 import com.fr33music.core.designsystem.theme.ColorTextPrimary
@@ -64,6 +69,7 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var showConfirmClearAudiosDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(uiState.showNoUpdateToast) {
         if (uiState.showNoUpdateToast) {
@@ -294,6 +300,17 @@ fun HomeScreen(
                         Text(text = "Limpiar caché de red e imágenes", color = ColorTextPrimary)
                     }
 
+                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
+
+                    OutlinedButton(
+                        onClick = { showConfirmClearAudiosDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(Fr33Radius.medium),
+                        border = BorderStroke(1.dp, ColorError.copy(alpha = 0.6f))
+                    ) {
+                        Text(text = "Liberar espacio (Borrar audios descargados)", color = ColorError)
+                    }
+
                     if (uiState.cacheClearedMessage != null) {
                         Spacer(modifier = Modifier.height(Fr33Spacing.small))
                         Text(
@@ -405,6 +422,38 @@ fun HomeScreen(
                     TextButton(onClick = viewModel::dismissUpdateDialog) {
                         Text(text = "Cancelar", color = ColorTextSecondary)
                     }
+                }
+            }
+        )
+    }
+
+    if (showConfirmClearAudiosDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfirmClearAudiosDialog = false },
+            containerColor = ColorSurface,
+            title = {
+                Text(text = "Liberar espacio", color = ColorTextPrimary, style = Fr33Typography.titleMedium)
+            },
+            text = {
+                Text(
+                    text = "Se borrarán los archivos de audio descargados, pero tus playlists y favoritos se mantendrán intactos. ¿Continuar?",
+                    color = ColorTextSecondary,
+                    style = Fr33Typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.clearAllDownloadedAudios()
+                        showConfirmClearAudiosDialog = false
+                    }
+                ) {
+                    Text("Continuar", color = ColorError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmClearAudiosDialog = false }) {
+                    Text("Cancelar", color = ColorTextSecondary)
                 }
             }
         )

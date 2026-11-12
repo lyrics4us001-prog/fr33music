@@ -17,6 +17,7 @@ import com.fr33music.core.domain.model.Track
 import com.fr33music.core.extractor.SearchSource
 import com.fr33music.core.player.PlayerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -119,11 +120,22 @@ class SearchViewModel @Inject constructor(
         )
 
     fun addSongToPlaylist(playlistId: Long, track: Track) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 libraryRepository.addSongToPlaylist(playlistId, track)
             } catch (e: Exception) {
                 Log.e("SearchViewModel", "Error al añadir canción a playlist: ${e.message}", e)
+            }
+        }
+    }
+
+    fun addSongsToPlaylist(playlistId: Long, tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                libraryRepository.addSongsToPlaylist(playlistId, tracks)
+            } catch (e: Exception) {
+                Log.e("SearchViewModel", "Error al añadir canciones masivas a playlist: ${e.message}", e)
             }
         }
     }

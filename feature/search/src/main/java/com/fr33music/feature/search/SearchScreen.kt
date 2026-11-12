@@ -29,6 +29,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Download
@@ -111,6 +112,7 @@ fun SearchScreen(
     val isLoadingChannel by viewModel.isLoadingChannel.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     var songForPlaylistDialog by remember { mutableStateOf<Track?>(null) }
+    var bulkTracksForPlaylistDialog by remember { mutableStateOf<List<Track>?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -154,7 +156,8 @@ fun SearchScreen(
                 onTrackSelected(track)
             },
             onToggleSave = viewModel::toggleSave,
-            onAddToPlaylist = { track -> songForPlaylistDialog = track }
+            onAddToPlaylist = { track -> songForPlaylistDialog = track },
+            onBulkAddToPlaylist = { tracks -> bulkTracksForPlaylistDialog = tracks }
         )
     } else if (selectedAlbum != null) {
         // Pantalla de detalle de álbum/playlist
@@ -187,7 +190,8 @@ fun SearchScreen(
             },
             onDownloadAll = onDownloadAll,
             onToggleSave = viewModel::toggleSave,
-            onAddToPlaylist = { track -> songForPlaylistDialog = track }
+            onAddToPlaylist = { track -> songForPlaylistDialog = track },
+            onBulkAddToPlaylist = { tracks -> bulkTracksForPlaylistDialog = tracks }
         )
     } else {
         // Pantalla principal del buscador
@@ -370,13 +374,38 @@ fun SearchScreen(
     if (songForPlaylistDialog != null) {
         val targetTrack = songForPlaylistDialog!!
         AddToPlaylistDialog(
-            track = targetTrack,
+            itemDescription = "${targetTrack.title} - ${targetTrack.artistName}",
             playlists = playlists,
             onDismiss = { songForPlaylistDialog = null },
-            onSelectPlaylist = { playlistId ->
+            onSelectPlaylist = { playlistId, playlistName ->
                 viewModel.addSongToPlaylist(playlistId, targetTrack)
-                Toast.makeText(context, "Añadida a la playlist", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Añadida a $playlistName", Toast.LENGTH_SHORT).show()
                 songForPlaylistDialog = null
+            },
+            onDeletePlaylist = { playlistId ->
+                viewModel.deletePlaylist(playlistId)
+            },
+            onCreateNewPlaylist = {
+                showCreatePlaylistDialog = true
+            }
+        )
+    }
+
+    // Diálogo para añadir canciones en masa a una playlist
+    if (bulkTracksForPlaylistDialog != null) {
+        val targetTracks = bulkTracksForPlaylistDialog!!
+        AddToPlaylistDialog(
+            itemDescription = "${targetTracks.size} canciones seleccionadas",
+            playlists = playlists,
+            onDismiss = { bulkTracksForPlaylistDialog = null },
+            onSelectPlaylist = { playlistId, playlistName ->
+                viewModel.addSongsToPlaylist(playlistId, targetTracks)
+                Toast.makeText(
+                    context,
+                    "${targetTracks.size} canciones añadidas a $playlistName",
+                    Toast.LENGTH_SHORT
+                ).show()
+                bulkTracksForPlaylistDialog = null
             },
             onDeletePlaylist = { playlistId ->
                 viewModel.deletePlaylist(playlistId)
@@ -641,7 +670,8 @@ private fun SearchChannelDetailView(
     onBack: () -> Unit,
     onTrackClick: (Track) -> Unit,
     onToggleSave: (Track) -> Unit,
-    onAddToPlaylist: (Track) -> Unit
+    onAddToPlaylist: (Track) -> Unit,
+    onBulkAddToPlaylist: (List<Track>) -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     val filteredVideos = remember(videos, searchQuery) {
@@ -680,6 +710,15 @@ private fun SearchChannelDetailView(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            if (videos.isNotEmpty()) {
+                IconButton(onClick = { onBulkAddToPlaylist(videos) }) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                        contentDescription = "Añadir todas a una playlist",
+                        tint = ColorTextPrimary
+                    )
+                }
+            }
         }
 
         OutlinedTextField(
@@ -895,7 +934,8 @@ private fun SearchAlbumDetailView(
     onPlayAll: (List<Track>, Boolean) -> Unit,
     onDownloadAll: (List<Track>) -> Unit = {},
     onToggleSave: (Track) -> Unit,
-    onAddToPlaylist: (Track) -> Unit
+    onAddToPlaylist: (Track) -> Unit,
+    onBulkAddToPlaylist: (List<Track>) -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     val filteredTracks = remember(tracks, searchQuery) {
@@ -941,6 +981,15 @@ private fun SearchAlbumDetailView(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            if (tracks.isNotEmpty()) {
+                IconButton(onClick = { onBulkAddToPlaylist(tracks) }) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                        contentDescription = "Añadir todas a una playlist",
+                        tint = ColorTextPrimary
+                    )
+                }
+            }
         }
 
         OutlinedTextField(
@@ -1028,61 +1077,6 @@ private fun SearchAlbumDetailView(
                         color = ColorTextTertiary,
                         textAlign = TextAlign.Center
                     )
-
-                    Spacer(modifier = Modifier.height(Fr33Spacing.large))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(Fr33Spacing.medium, Alignment.CenterHorizontally)
-                    ) {
-                        Button(
-                            onClick = { onPlayAll(tracks, false) },
-                            colors = ButtonDefaults.buttonColors(containerColor = ColorPrimary),
-                            shape = RoundedCornerShape(Fr33Radius.large),
-                            modifier = Modifier.weight(1f),
-                            enabled = tracks.isNotEmpty()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(Fr33Spacing.small))
-                            Text("Reproducir", style = Fr33Typography.labelLarge)
-                        }
-
-                        OutlinedButton(
-                            onClick = { onPlayAll(tracks, true) },
-                            shape = RoundedCornerShape(Fr33Radius.large),
-                            modifier = Modifier.weight(1f),
-                            enabled = tracks.isNotEmpty()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Shuffle,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = ColorPrimary
-                            )
-                            Spacer(modifier = Modifier.width(Fr33Spacing.small))
-                            Text("Aleatorio", style = Fr33Typography.labelLarge, color = ColorPrimary)
-                        }
-
-                        OutlinedButton(
-                            onClick = { onDownloadAll(tracks) },
-                            shape = RoundedCornerShape(Fr33Radius.large),
-                            modifier = Modifier.weight(1f),
-                            enabled = tracks.isNotEmpty()
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Download,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = ColorPrimary
-                            )
-                            Spacer(modifier = Modifier.width(Fr33Spacing.small))
-                            Text("Descargar", style = Fr33Typography.labelLarge, color = ColorPrimary)
-                        }
-                    }
 
                     Spacer(modifier = Modifier.height(Fr33Spacing.large))
 
@@ -1292,10 +1286,10 @@ private fun CreatePlaylistDialog(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AddToPlaylistDialog(
-    track: Track,
+    itemDescription: String,
     playlists: List<PlaylistWithSongCount>,
     onDismiss: () -> Unit,
-    onSelectPlaylist: (Long) -> Unit,
+    onSelectPlaylist: (Long, String) -> Unit,
     onDeletePlaylist: (Long) -> Unit,
     onCreateNewPlaylist: () -> Unit
 ) {
@@ -1338,7 +1332,7 @@ private fun AddToPlaylistDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "${track.title} - ${track.artistName}",
+                    text = itemDescription,
                     style = Fr33Typography.bodySmall,
                     color = ColorTextSecondary,
                     maxLines = 1,
@@ -1366,7 +1360,7 @@ private fun AddToPlaylistDialog(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(Fr33Radius.small))
                                     .combinedClickable(
-                                        onClick = { onSelectPlaylist(playlist.id) },
+                                        onClick = { onSelectPlaylist(playlist.id, playlist.name) },
                                         onLongClick = { playlistToDelete = playlist }
                                     )
                                     .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),

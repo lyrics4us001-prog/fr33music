@@ -5,5 +5,6 @@ data class AudioStream(
     val headers: Map<String, String>,
     val mime: String,
     val bitrateKbps: Int,
-    val format: AudioFormat
+    val format: AudioFormat,
+    val durationMs: Long = 0L
 )

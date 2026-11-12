@@ -66,7 +66,8 @@ class NewPipeStreamResolver(
                     headers = emptyMap(),
                     mime = if (isOpus) "audio/opus" else "audio/mp4",
                     bitrateKbps = 160,
-                    format = if (isOpus) AudioFormat.OPUS else AudioFormat.M4A
+                    format = if (isOpus) AudioFormat.OPUS else AudioFormat.M4A,
+                    durationMs = track.durationMs
                 )
                 return@withContext Result.success(offlineStream)
             }
@@ -114,16 +115,31 @@ class NewPipeStreamResolver(
                         headers["Cookie"] = cookieMap.entries.joinToString("; ") { "${it.key}=${it.value}" }
                     }
 
+                    val resolvedDuration = try {
+                        if (streamInfo.duration > 0) streamInfo.duration * 1000L else track.durationMs
+                    } catch (_: Exception) {
+                        track.durationMs
+                    }
+
                     val resolved = AudioStream(
                         url = bestCandidate.url,
                         headers = headers,
                         mime = bestCandidate.mime,
                         bitrateKbps = bestCandidate.bitrateKbps,
-                        format = bestCandidate.format
+                        format = bestCandidate.format,
+                        durationMs = resolvedDuration
                     )
 
                     return@withContext Result.success(resolved)
                 } catch (e: Exception) {
+                    val fullErrorText = (e.message ?: "") + " " + (e.cause?.message ?: "")
+                    if (fullErrorText.contains("age-restricted", ignoreCase = true) ||
+                        fullErrorText.contains("sign in to confirm your age", ignoreCase = true) ||
+                        fullErrorText.contains("confirm your age", ignoreCase = true)
+                    ) {
+                        Log.w("StreamResolver", "Video con restricción de edad detectado: $videoUrl")
+                        return@withContext Result.failure(ExtractorError.AgeRestricted(cause = e))
+                    }
                     lastError = e
                     Log.w("StreamResolver", "Fallo al resolver stream en intento $attempt/3: ${e.message}")
                     if (attempt < 3) {
@@ -133,7 +149,13 @@ class NewPipeStreamResolver(
             }
 
             val finalError = lastError ?: Exception("Error desconocido al resolver audio")
-            if (finalError is IOException) {
+            val finalErrorText = (finalError.message ?: "") + " " + (finalError.cause?.message ?: "")
+            if (finalErrorText.contains("age-restricted", ignoreCase = true) ||
+                finalErrorText.contains("sign in to confirm your age", ignoreCase = true) ||
+                finalErrorText.contains("confirm your age", ignoreCase = true)
+            ) {
+                Result.failure(ExtractorError.AgeRestricted(cause = finalError))
+            } else if (finalError is IOException) {
                 Result.failure(ExtractorError.NetworkError(finalError.message, finalError))
             } else if (finalError is ExtractorError) {
                 Result.failure(finalError)
@@ -141,7 +163,15 @@ class NewPipeStreamResolver(
                 Result.failure(ExtractorError.Unknown(finalError.message, finalError))
             }
         } catch (e: Exception) {
-            Result.failure(ExtractorError.Unknown(e.message, e))
+            val fullMsg = (e.message ?: "") + " " + (e.cause?.message ?: "")
+            if (fullMsg.contains("age-restricted", ignoreCase = true) ||
+                fullMsg.contains("sign in to confirm your age", ignoreCase = true) ||
+                fullMsg.contains("confirm your age", ignoreCase = true)
+            ) {
+                Result.failure(ExtractorError.AgeRestricted(cause = e))
+            } else {
+                Result.failure(ExtractorError.Unknown(e.message, e))
+            }
         }
     }
 

@@ -9,6 +9,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.fr33music.core.data.AudioCacheManager
 import com.fr33music.core.database.dao.AlbumDao
 import com.fr33music.core.database.dao.ArtistDao
 import com.fr33music.core.database.dao.DownloadDao
@@ -38,7 +39,8 @@ class DownloadManager @Inject constructor(
     private val downloadDao: DownloadDao,
     private val trackDao: TrackDao,
     private val artistDao: ArtistDao,
-    private val albumDao: AlbumDao
+    private val albumDao: AlbumDao,
+    private val audioCacheManager: AudioCacheManager
 ) : DownloadRepository {
 
     private val workManager = WorkManager.getInstance(context)
@@ -186,6 +188,51 @@ class DownloadManager @Inject constructor(
             return
         }
 
+        // Si el archivo ya existe en caché temporal, mover a descargas permanentes directamente
+        val promotedFile = audioCacheManager.promoteCachedToDownload(track.trackId)
+        if (promotedFile != null && promotedFile.length() >= MIN_FILE_SIZE_BYTES) {
+            Log.i(TAG, "Canción ${track.trackId} encontrada en caché temporal y promovida a descargas permanentes.")
+            val format = if (promotedFile.name.endsWith(".opus", true)) "OPUS" else "M4A"
+
+            val existingTrack = trackDao.getTrackSync(track.trackId)
+            if (existingTrack == null) {
+                trackDao.insertTrack(
+                    TrackEntity(
+                        id = track.trackId,
+                        title = track.title,
+                        artistName = track.artistName,
+                        albumName = track.albumName,
+                        durationMs = track.durationMs,
+                        thumbnailUrl = track.thumbnailUrl,
+                        isDownloaded = true,
+                        localPath = promotedFile.absolutePath,
+                        format = format,
+                        isSaved = false
+                    )
+                )
+            } else {
+                trackDao.setDownloaded(
+                    id = track.trackId,
+                    isDownloaded = true,
+                    localPath = promotedFile.absolutePath,
+                    format = format
+                )
+            }
+
+            downloadDao.insertDownload(
+                DownloadEntity(
+                    trackId = track.trackId,
+                    title = track.title,
+                    artistName = track.artistName,
+                    thumbnailUrl = track.thumbnailUrl,
+                    status = DownloadStatus.COMPLETED,
+                    localPath = promotedFile.absolutePath,
+                    progress = 100
+                )
+            )
+            return
+        }
+
         // 2. Registrar o actualizar metadatos en TrackDao
         val existingTrack = trackDao.getTrackSync(track.trackId)
         if (existingTrack == null) {
@@ -307,6 +354,34 @@ class DownloadManager @Inject constructor(
                 trackDao.deleteTrack(trackId)
             }
         }
+    }
+
+    override suspend fun clearAllDownloadedAudios() {
+        try {
+            workManager.cancelAllWork()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error al cancelar tareas de descarga: ${e.message}")
+        }
+
+        try {
+            val downloadsDir = File(context.filesDir, "downloads")
+            if (downloadsDir.exists()) {
+                downloadsDir.listFiles()?.forEach { file ->
+                    if (file.isFile) {
+                        val name = file.name.lowercase()
+                        if (name.endsWith(".opus") || name.endsWith(".m4a") || name.endsWith(".tmp")) {
+                            file.delete()
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error borrando archivos físicos de audio: ${e.message}")
+        }
+
+        downloadDao.deleteAllDownloads()
+        trackDao.clearAllDownloadedFlags()
+        Log.i(TAG, "Todos los archivos de audio descargados y sus estados han sido limpiados.")
     }
 
     private fun findLocalDownloadedFile(trackId: String): File? {

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import coil.Coil
 import com.fr33music.core.database.dao.SearchHistoryDao
+import com.fr33music.core.database.download.DownloadRepository
 import com.fr33music.core.domain.model.Track
 import com.fr33music.core.extractor.ExtractorInfo
 import com.fr33music.core.extractor.SearchSource
@@ -49,7 +50,8 @@ class HomeViewModel @Inject constructor(
     private val playerRepository: PlayerRepository,
     private val updateChecker: UpdateChecker,
     private val updateDownloader: UpdateDownloader,
-    private val apkInstaller: ApkInstaller
+    private val apkInstaller: ApkInstaller,
+    private val downloadRepository: DownloadRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -158,6 +160,21 @@ class HomeViewModel @Inject constructor(
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
                     _uiState.update { it.copy(cacheClearedMessage = "Error al limpiar caché") }
+                }
+            }
+        }
+    }
+
+    fun clearAllDownloadedAudios() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                downloadRepository.clearAllDownloadedAudios()
+                withContext(Dispatchers.Main) {
+                    _uiState.update { it.copy(cacheClearedMessage = "Archivos de audio descargados eliminados") }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _uiState.update { it.copy(cacheClearedMessage = "Error al borrar audios descargados") }
                 }
             }
         }

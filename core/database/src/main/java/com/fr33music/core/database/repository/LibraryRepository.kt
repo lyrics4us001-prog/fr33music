@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.Flow
 interface LibraryRepository {
     suspend fun toggleSave(track: Track, isCurrentlySaved: Boolean)
     suspend fun save(track: Track)
+    suspend fun deleteArtist(artistName: String)
     suspend fun deleteDownload(trackId: String)
     suspend fun remove(trackId: String)
 
@@ -17,5 +18,6 @@ interface LibraryRepository {
     suspend fun createPlaylist(name: String): Long
     suspend fun deletePlaylist(id: Long)
     suspend fun addSongToPlaylist(playlistId: Long, track: Track)
+    suspend fun addSongsToPlaylist(playlistId: Long, tracks: List<Track>)
     suspend fun removeSongFromPlaylist(playlistId: Long, trackId: String)
 }

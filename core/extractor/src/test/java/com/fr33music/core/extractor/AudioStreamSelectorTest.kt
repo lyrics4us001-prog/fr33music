@@ -9,7 +9,7 @@ import org.junit.Test
 class AudioStreamSelectorTest {
 
     @Test
-    fun `fixture 1 - OPUS y M4A disponibles - prioriza OPUS con mayor bitrate`() {
+    fun `fixture 1 - OPUS y M4A disponibles - prioriza OPUS en rango 96-128kbps para streaming veloz`() {
         val candidates = listOf(
             AudioCandidate(
                 url = "https://audio.stream/m4a_128",
@@ -41,12 +41,13 @@ class AudioStreamSelectorTest {
 
         assertNotNull(selected)
         assertEquals(AudioFormat.OPUS, selected?.format)
-        assertEquals(160, selected?.bitrateKbps)
-        assertEquals("https://audio.stream/opus_160", selected?.url)
+        // Entre 96 y 160, debe priorizar 96 para iniciar streaming rápido
+        assertEquals(96, selected?.bitrateKbps)
+        assertEquals("https://audio.stream/opus_96", selected?.url)
     }
 
     @Test
-    fun `fixture 2 - solo M4A disponible - selecciona M4A con mayor bitrate`() {
+    fun `fixture 2 - solo M4A disponible - selecciona M4A en rango optimo para inicio rapido`() {
         val candidates = listOf(
             AudioCandidate(
                 url = "https://audio.stream/m4a_128",
@@ -72,8 +73,9 @@ class AudioStreamSelectorTest {
 
         assertNotNull(selected)
         assertEquals(AudioFormat.M4A, selected?.format)
-        assertEquals(256, selected?.bitrateKbps)
-        assertEquals("https://audio.stream/m4a_256", selected?.url)
+        // 128kbps debe ser priorizado sobre 256kbps para arranque rápido
+        assertEquals(128, selected?.bitrateKbps)
+        assertEquals("https://audio.stream/m4a_128", selected?.url)
     }
 
     @Test
@@ -95,7 +97,7 @@ class AudioStreamSelectorTest {
     }
 
     @Test
-    fun `OPUS disponible en rango optimo 128-160 kbps - prioriza 160 sobre 256`() {
+    fun `OPUS disponible en rango optimo 128-160 kbps - prioriza 128 sobre 160 y 256 para arranque rapido`() {
         val candidates = listOf(
             AudioCandidate(
                 url = "https://audio.stream/opus_256",
@@ -121,8 +123,8 @@ class AudioStreamSelectorTest {
 
         assertNotNull(selected)
         assertEquals(AudioFormat.OPUS, selected?.format)
-        assertEquals(160, selected?.bitrateKbps)
-        assertEquals("https://audio.stream/opus_160", selected?.url)
+        assertEquals(128, selected?.bitrateKbps)
+        assertEquals("https://audio.stream/opus_128", selected?.url)
     }
 
     @Test

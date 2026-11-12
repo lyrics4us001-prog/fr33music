@@ -1,5 +1,6 @@
 package com.fr33music.ui
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -23,12 +24,14 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -64,6 +67,14 @@ fun MainScreen(
     val playbackState by viewModel.playerRepository.playbackState.collectAsStateWithLifecycle()
     var currentTab by remember { mutableStateOf(NavTab.SEARCH) }
     var isPlayerExpanded by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    LaunchedEffect(playbackState.error) {
+        val err = playbackState.error
+        if (!err.isNullOrBlank()) {
+            Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+        }
+    }
 
     BackHandler(enabled = isPlayerExpanded) {
         isPlayerExpanded = false

@@ -2,6 +2,8 @@ package com.fr33music.feature.library
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -35,15 +37,21 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -97,6 +105,50 @@ fun LibraryScreen(
 
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var songForPlaylistDialog by remember { mutableStateOf<Track?>(null) }
+    var artistToDelete by remember { mutableStateOf<String?>(null) }
+    var playlistToExport by remember { mutableStateOf<Pair<String, List<TrackEntity>>?>(null) }
+
+    val context = LocalContext.current
+
+    val singlePlaylistExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null && playlistToExport != null) {
+            val (name, tracks) = playlistToExport!!
+            viewModel.exportSinglePlaylistToUri(context, uri, name, tracks) { success ->
+                Toast.makeText(
+                    context,
+                    if (success) "Playlist exportada con éxito" else "Error al exportar playlist",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            playlistToExport = null
+        }
+    }
+
+    val exportAllLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportAllPlaylistsToUri(context, uri) { success ->
+                Toast.makeText(
+                    context,
+                    if (success) "Copia de seguridad guardada con éxito" else "Error al exportar playlists",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    val importPlaylistsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importPlaylistsFromUri(context, uri) { success, message ->
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     // Interceptar botón atrás físico para volver de la vista de detalle en lugar de cerrar la app
     BackHandler(enabled = uiState.selectedArtist != null) {
@@ -111,12 +163,26 @@ fun LibraryScreen(
             .fillMaxSize()
             .background(ColorBackground)
     ) {
-        Text(
-            text = "Biblioteca",
-            style = Fr33Typography.headlineMedium,
-            color = ColorTextPrimary,
-            modifier = Modifier.padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.medium)
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.medium),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Biblioteca",
+                style = Fr33Typography.headlineMedium,
+                color = ColorTextPrimary
+            )
+
+            if (uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
+                SortFilterMenu(
+                    sortOrder = uiState.sortOrder,
+                    onSortOrderSelected = viewModel::setSortOrder
+                )
+            }
+        }
 
         // Chips de las 4 pestañas: Artistas, Álbumes, Playlists, Todas las canciones
         LazyRow(
@@ -172,6 +238,8 @@ fun LibraryScreen(
                             artistName = selectedArtist,
                             thumbnailUrl = artistItem?.thumbnailUrl,
                             tracks = artistTracks,
+                            sortOrder = uiState.sortOrder,
+                            onSortOrderSelected = viewModel::setSortOrder,
                             onBack = { viewModel.selectArtist(null) },
                             onPlayTrack = { track, list -> viewModel.playFromList(track, list) },
                             onPlayAll = { tracks -> viewModel.playAll(tracks) },
@@ -197,7 +265,8 @@ fun LibraryScreen(
                                         trackId = null,
                                         fallbackIcon = Icons.Default.Person,
                                         isCircular = true,
-                                        onClick = { viewModel.selectArtist(artistItem.name) }
+                                        onClick = { viewModel.selectArtist(artistItem.name) },
+                                        onDelete = { artistToDelete = artistItem.name }
                                     )
                                     HorizontalDivider(
                                         color = ColorDivider,
@@ -217,7 +286,15 @@ fun LibraryScreen(
                         PlaylistDetailView(
                             playlistName = uiState.selectedPlaylistName ?: "Playlist",
                             tracks = playlistSongs,
+                            sortOrder = uiState.sortOrder,
+                            onSortOrderSelected = viewModel::setSortOrder,
                             onBack = { viewModel.selectPlaylist(null) },
+                            onExport = {
+                                val currentName = uiState.selectedPlaylistName ?: "Playlist"
+                                val safeName = currentName.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                                playlistToExport = Pair(currentName, playlistSongs)
+                                singlePlaylistExportLauncher.launch("$safeName.json")
+                            },
                             onPlayTrack = { track, list -> viewModel.playFromList(track, list) },
                             onPlayAll = { tracks -> viewModel.playAll(tracks) },
                             onDownloadAll = onDownloadAll,
@@ -225,9 +302,6 @@ fun LibraryScreen(
                             onDeleteDownload = { trackId -> viewModel.deleteDownload(trackId) },
                             onRemoveFromPlaylist = { trackId ->
                                 viewModel.removeSongFromPlaylist(selectedPlaylistId, trackId)
-                            },
-                            onDeletePlaylist = {
-                                viewModel.deletePlaylist(selectedPlaylistId)
                             }
                         )
                     } else {
@@ -244,18 +318,48 @@ fun LibraryScreen(
                                     style = Fr33Typography.titleMedium,
                                     color = ColorTextSecondary
                                 )
-                                Button(
-                                    onClick = { showCreatePlaylistDialog = true },
-                                    colors = ButtonDefaults.buttonColors(containerColor = ColorPrimary),
-                                    shape = RoundedCornerShape(Fr33Radius.large)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Add,
-                                        contentDescription = "Nueva Playlist",
-                                        modifier = Modifier.size(18.dp)
-                                    )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // Botón Importar Playlists
+                                    IconButton(
+                                        onClick = {
+                                            importPlaylistsLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.FolderOpen,
+                                            contentDescription = "Importar playlists",
+                                            tint = ColorTextPrimary
+                                        )
+                                    }
+
+                                    // Botón Exportar Todas las Playlists
+                                    IconButton(
+                                        onClick = {
+                                            exportAllLauncher.launch("fr33music_backup.json")
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Upload,
+                                            contentDescription = "Exportar todas las playlists",
+                                            tint = ColorTextPrimary
+                                        )
+                                    }
+
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text(text = "Nueva", style = Fr33Typography.labelMedium)
+
+                                    Button(
+                                        onClick = { showCreatePlaylistDialog = true },
+                                        colors = ButtonDefaults.buttonColors(containerColor = ColorPrimary),
+                                        shape = RoundedCornerShape(Fr33Radius.large)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Add,
+                                            contentDescription = "Nueva Playlist",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(text = "Nueva", style = Fr33Typography.labelMedium)
+                                    }
                                 }
                             }
 
@@ -359,20 +463,20 @@ fun LibraryScreen(
                                     style = Fr33Typography.bodyMedium,
                                     color = ColorTextSecondary
                                 )
-                                if (allTracksDomain.isNotEmpty()) {
-                                    Button(
-                                        onClick = { viewModel.playAll(allTracksDomain) },
-                                        colors = ButtonDefaults.buttonColors(containerColor = ColorPrimary),
-                                        shape = RoundedCornerShape(Fr33Radius.large)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.PlayArrow,
-                                            contentDescription = "Reproducir todo",
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(text = "Reproducir todo", style = Fr33Typography.labelMedium)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (allTracksDomain.isNotEmpty()) {
+                                        IconButton(onClick = { onDownloadAll(allTracksDomain) }) {
+                                            Icon(
+                                                imageVector = Icons.Default.Download,
+                                                contentDescription = "Descargar todo",
+                                                tint = ColorPrimary
+                                            )
+                                        }
                                     }
+                                    SortFilterMenu(
+                                        sortOrder = uiState.sortOrder,
+                                        onSortOrderSelected = viewModel::setSortOrder
+                                    )
                                 }
                             }
 
@@ -414,6 +518,37 @@ fun LibraryScreen(
                 viewModel.createPlaylist(name)
                 showCreatePlaylistDialog = false
             }
+        )
+    }
+
+    // Diálogo para eliminar artista
+    if (artistToDelete != null) {
+        val targetArtist = artistToDelete!!
+        AlertDialog(
+            onDismissRequest = { artistToDelete = null },
+            title = { Text(text = "Eliminar Artista", color = ColorTextPrimary) },
+            text = {
+                Text(
+                    text = "¿Eliminar a $targetArtist y todas sus canciones guardadas?",
+                    color = ColorTextSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteArtist(targetArtist)
+                        artistToDelete = null
+                    }
+                ) {
+                    Text("Eliminar", color = ColorError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { artistToDelete = null }) {
+                    Text("Cancelar", color = ColorTextSecondary)
+                }
+            },
+            containerColor = ColorSurface
         )
     }
 
@@ -547,14 +682,16 @@ private fun PlaylistRow(
 private fun PlaylistDetailView(
     playlistName: String,
     tracks: List<TrackEntity>,
+    sortOrder: LibrarySortOrder = LibrarySortOrder.RECENTLY_ADDED,
+    onSortOrderSelected: (LibrarySortOrder) -> Unit = {},
     onBack: () -> Unit,
+    onExport: () -> Unit = {},
     onPlayTrack: (Track, List<Track>) -> Unit,
     onPlayAll: (List<Track>) -> Unit,
     onDownloadAll: (List<Track>) -> Unit = {},
     onToggleSave: (Track, Boolean) -> Unit,
     onDeleteDownload: (String) -> Unit,
-    onRemoveFromPlaylist: (String) -> Unit,
-    onDeletePlaylist: () -> Unit
+    onRemoveFromPlaylist: (String) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
     val filteredTracks = remember(tracks, searchQuery) {
@@ -592,29 +729,31 @@ private fun PlaylistDetailView(
                 overflow = TextOverflow.Ellipsis
             )
 
+            // 1. Descargar (IconButton)
             if (allDomainTracks.isNotEmpty()) {
-                OutlinedButton(
-                    onClick = { onDownloadAll(allDomainTracks) },
-                    shape = RoundedCornerShape(Fr33Radius.large)
-                ) {
+                IconButton(onClick = { onDownloadAll(allDomainTracks) }) {
                     Icon(
                         imageVector = Icons.Default.Download,
-                        contentDescription = "Descargar todo",
-                        modifier = Modifier.size(18.dp),
+                        contentDescription = "Descargar todas las canciones",
                         tint = ColorPrimary
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(text = "Descargar", style = Fr33Typography.labelMedium, color = ColorPrimary)
                 }
             }
 
-            IconButton(onClick = onDeletePlaylist) {
+            // 2. Compartir / Exportar
+            IconButton(onClick = onExport) {
                 Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Eliminar playlist",
-                    tint = ColorTextTertiary
+                    imageVector = Icons.Default.Share,
+                    contentDescription = "Exportar playlist",
+                    tint = ColorTextPrimary
                 )
             }
+
+            // 3. Filtro
+            SortFilterMenu(
+                sortOrder = sortOrder,
+                onSortOrderSelected = onSortOrderSelected
+            )
         }
 
         if (tracks.isNotEmpty()) {
@@ -724,7 +863,8 @@ private fun GroupRow(
     fallbackIcon: androidx.compose.ui.graphics.vector.ImageVector,
     trackId: String? = null,
     isCircular: Boolean = false,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDelete: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
@@ -761,6 +901,16 @@ private fun GroupRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
+
+        if (onDelete != null) {
+            IconButton(onClick = onDelete) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Eliminar",
+                    tint = ColorTextTertiary
+                )
+            }
+        }
     }
 }
 
@@ -769,6 +919,8 @@ private fun ArtistDetailView(
     artistName: String,
     thumbnailUrl: String?,
     tracks: List<TrackEntity>,
+    sortOrder: LibrarySortOrder = LibrarySortOrder.RECENTLY_ADDED,
+    onSortOrderSelected: (LibrarySortOrder) -> Unit = {},
     onBack: () -> Unit,
     onPlayTrack: (Track, List<Track>) -> Unit,
     onPlayAll: (List<Track>) -> Unit,
@@ -813,20 +965,19 @@ private fun ArtistDetailView(
                 overflow = TextOverflow.Ellipsis
             )
             if (domainTracks.isNotEmpty()) {
-                OutlinedButton(
-                    onClick = { onDownloadAll(domainTracks) },
-                    shape = RoundedCornerShape(Fr33Radius.large)
-                ) {
+                IconButton(onClick = { onDownloadAll(domainTracks) }) {
                     Icon(
                         imageVector = Icons.Default.Download,
                         contentDescription = "Descargar todo",
-                        modifier = Modifier.size(18.dp),
                         tint = ColorPrimary
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(text = "Descargar Todo", style = Fr33Typography.labelMedium, color = ColorPrimary)
                 }
             }
+
+            SortFilterMenu(
+                sortOrder = sortOrder,
+                onSortOrderSelected = onSortOrderSelected
+            )
         }
 
         LazyColumn(
@@ -1058,5 +1209,57 @@ private fun LibraryEmptyView(
             color = ColorTextTertiary,
             textAlign = TextAlign.Center
         )
+    }
+}
+
+@Composable
+private fun SortFilterMenu(
+    sortOrder: LibrarySortOrder,
+    onSortOrderSelected: (LibrarySortOrder) -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    Box {
+        IconButton(onClick = { showMenu = true }) {
+            Icon(
+                imageVector = Icons.Default.FilterList,
+                contentDescription = "Ordenar lista",
+                tint = ColorTextPrimary
+            )
+        }
+
+        DropdownMenu(
+            expanded = showMenu,
+            onDismissRequest = { showMenu = false },
+            modifier = Modifier.background(ColorSurface)
+        ) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = "Añadidos recientemente",
+                        color = if (sortOrder == LibrarySortOrder.RECENTLY_ADDED) ColorPrimary else ColorTextPrimary,
+                        style = Fr33Typography.bodyMedium
+                    )
+                },
+                onClick = {
+                    onSortOrderSelected(LibrarySortOrder.RECENTLY_ADDED)
+                    showMenu = false
+                }
+            )
+
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = "Orden alfabético",
+                        color = if (sortOrder == LibrarySortOrder.ALPHABETICAL) ColorPrimary else ColorTextPrimary,
+                        style = Fr33Typography.bodyMedium
+                    )
+                },
+                onClick = {
+                    onSortOrderSelected(LibrarySortOrder.ALPHABETICAL)
+                    showMenu = false
+                }
+            )
+        }
     }
 }

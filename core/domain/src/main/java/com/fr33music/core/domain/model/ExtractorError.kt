@@ -13,6 +13,11 @@ sealed class ExtractorError(
         override val message: String? = "El stream de audio no está disponible"
     ) : ExtractorError(message)
 
+    data class AgeRestricted(
+        override val message: String? = "Este video tiene restricción de edad y no se puede reproducir de forma anónima.",
+        override val cause: Throwable? = null
+    ) : ExtractorError(message, cause)
+
     object EmptyQuery : ExtractorError("La consulta de búsqueda está vacía")
 
     data class Unknown(

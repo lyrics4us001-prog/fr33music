@@ -19,4 +19,5 @@ interface DownloadRepository {
     suspend fun syncDownloadedFiles()
     suspend fun download(track: Track)
     suspend fun deleteDownload(trackId: String)
+    suspend fun clearAllDownloadedAudios()
 }

@@ -78,10 +78,13 @@ class LibraryRepositoryImpl @Inject constructor(
             val effectiveAlbum: String = if (isRealAlbum) track.albumName!! else "Sencillos"
 
             val localCoverFile = File(context.filesDir, "downloads/${track.trackId}.jpg")
+            val trackThumb = track.thumbnailUrl
             val thumb = if (localCoverFile.exists() && localCoverFile.length() > 0) {
                 android.net.Uri.fromFile(localCoverFile).toString()
+            } else if (!trackThumb.isNullOrBlank() && !trackThumb.startsWith("file:")) {
+                trackThumb
             } else {
-                track.thumbnailUrl
+                "https://i.ytimg.com/vi/${track.trackId}/hqdefault.jpg"
             }
 
             if (artist.isNotBlank()) {
@@ -154,6 +157,16 @@ class LibraryRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun deleteArtist(artistName: String): Unit = withContext(Dispatchers.IO) {
+        val tracks = trackDao.getTracksByArtistSync(artistName)
+        for (track in tracks) {
+            deleteDownload(track.id)
+        }
+        trackDao.deleteTracksByArtist(artistName)
+        artistDao.deleteArtist(artistName)
+        Log.i(TAG, "Artista $artistName y sus canciones asociadas han sido eliminados.")
+    }
+
     override suspend fun remove(trackId: String) {
         deleteDownload(trackId)
         withContext(Dispatchers.IO) {
@@ -192,6 +205,26 @@ class LibraryRepositoryImpl @Inject constructor(
         val trackThumb = track.thumbnailUrl
         if (playlist != null && playlist.thumbnailUrl.isNullOrBlank() && !trackThumb.isNullOrBlank()) {
             playlistDao.updatePlaylistThumbnail(playlistId, trackThumb)
+        }
+    }
+
+    override suspend fun addSongsToPlaylist(playlistId: Long, tracks: List<Track>) = withContext(Dispatchers.IO) {
+        if (tracks.isEmpty()) return@withContext
+        val trackEntities = tracks.map { track ->
+            val existing = trackDao.getTrackSync(track.trackId)
+            existing ?: TrackEntity.fromDomain(track, isSaved = false)
+        }
+        trackDao.insertTracks(trackEntities)
+
+        val crossRefs = tracks.map {
+            PlaylistSongCrossRef(playlistId = playlistId, trackId = it.trackId)
+        }
+        playlistDao.insertSongsToPlaylist(crossRefs)
+
+        val playlist = playlistDao.getPlaylistSync(playlistId)
+        val firstThumb = tracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
+        if (playlist != null && playlist.thumbnailUrl.isNullOrBlank() && !firstThumb.isNullOrBlank()) {
+            playlistDao.updatePlaylistThumbnail(playlistId, firstThumb)
         }
     }
 

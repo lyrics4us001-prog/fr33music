@@ -47,13 +47,22 @@ interface TrackDao {
     @Query("UPDATE tracks SET isDownloaded = :isDownloaded, localPath = :localPath, format = :format WHERE id = :id")
     suspend fun setDownloaded(id: String, isDownloaded: Boolean, localPath: String?, format: String?)
 
+    @Query("UPDATE tracks SET isDownloaded = 0, localPath = NULL, format = NULL")
+    suspend fun clearAllDownloadedFlags()
+
     @Query("DELETE FROM tracks WHERE id = :id")
     suspend fun deleteTrack(id: String)
 
-    @Query("SELECT DISTINCT artistName FROM tracks WHERE isSaved = 1 OR isDownloaded = 1 ORDER BY artistName ASC")
+    @Query("SELECT * FROM tracks WHERE artistName = :artistName")
+    suspend fun getTracksByArtistSync(artistName: String): List<TrackEntity>
+
+    @Query("DELETE FROM tracks WHERE artistName = :artistName")
+    suspend fun deleteTracksByArtist(artistName: String)
+
+    @Query("SELECT DISTINCT artistName FROM tracks WHERE isSaved = 1 ORDER BY artistName ASC")
     fun getDistinctArtists(): Flow<List<String>>
 
-    @Query("SELECT * FROM tracks WHERE artistName = :artistName AND (isSaved = 1 OR isDownloaded = 1) ORDER BY title ASC")
+    @Query("SELECT * FROM tracks WHERE artistName = :artistName AND isSaved = 1 ORDER BY title ASC")
     fun getTracksByArtist(artistName: String): Flow<List<TrackEntity>>
 
     @Query("SELECT DISTINCT albumName FROM tracks WHERE albumName IS NOT NULL AND (isSaved = 1 OR isDownloaded = 1) ORDER BY albumName ASC")

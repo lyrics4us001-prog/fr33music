@@ -1,25 +1,16 @@
 package com.fr33music.core.player.service
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
-import android.os.Build
 import androidx.annotation.OptIn
-import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import com.fr33music.core.player.PlayerRepository
+import com.fr33music.core.player.R
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -28,61 +19,43 @@ class Fr33MusicPlayerService : MediaSessionService() {
     @Inject
     lateinit var exoPlayer: ExoPlayer
 
-    @Inject
-    lateinit var playerRepository: PlayerRepository
-
     private var mediaSession: MediaSession? = null
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     companion object {
-        const val CHANNEL_ID = "fr33music_playback_channel"
-        const val NOTIFICATION_ID = 1001
+        @Volatile
+        var isRunning: Boolean = false
+            internal set
     }
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
 
-        createNotificationChannel()
-
-        val notificationProvider = DefaultMediaNotificationProvider.Builder(this)
-            .setChannelId(CHANNEL_ID)
-            .setNotificationId(NOTIFICATION_ID)
-            .build()
+        // 1. MediaSessionService gestiona la notificación 100% de forma nativa
+        val notificationProvider = DefaultMediaNotificationProvider(this).apply {
+            setSmallIcon(R.drawable.ic_notification)
+        }
         setMediaNotificationProvider(notificationProvider)
 
-        val forwardingPlayer = object : ForwardingPlayer(exoPlayer) {
-            override fun getAvailableCommands(): Player.Commands {
-                return super.getAvailableCommands().buildUpon()
-                    .add(COMMAND_SEEK_TO_NEXT)
-                    .add(COMMAND_SEEK_TO_PREVIOUS)
-                    .add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
-                    .add(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+        val sessionCallback = object : MediaSession.Callback {
+            override fun onConnect(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo
+            ): MediaSession.ConnectionResult {
+                val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon().build()
+                val playerCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
+                    .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+                    .add(Player.COMMAND_SEEK_TO_NEXT)
+                    .add(Player.COMMAND_SEEK_TO_PREVIOUS)
+                    .add(Player.COMMAND_SEEK_TO_MEDIA_ITEM)
+                    .add(Player.COMMAND_PLAY_PAUSE)
+                    .add(Player.COMMAND_PREPARE)
+                    .add(Player.COMMAND_STOP)
+                    .add(Player.COMMAND_SET_MEDIA_ITEMS_METADATA)
+                    .add(Player.COMMAND_CHANGE_MEDIA_ITEMS)
                     .build()
-            }
-
-            override fun isCommandAvailable(command: Int): Boolean {
-                return command == COMMAND_SEEK_TO_NEXT ||
-                        command == COMMAND_SEEK_TO_PREVIOUS ||
-                        command == COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
-                        command == COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM ||
-                        super.isCommandAvailable(command)
-            }
-
-            override fun seekToNext() {
-                serviceScope.launch { playerRepository.next() }
-            }
-
-            override fun seekToPrevious() {
-                serviceScope.launch { playerRepository.previous() }
-            }
-
-            override fun seekToNextMediaItem() {
-                serviceScope.launch { playerRepository.next() }
-            }
-
-            override fun seekToPreviousMediaItem() {
-                serviceScope.launch { playerRepository.previous() }
+                return MediaSession.ConnectionResult.accept(sessionCommands, playerCommands)
             }
         }
 
@@ -96,7 +69,9 @@ class Fr33MusicPlayerService : MediaSessionService() {
             )
         }
 
-        val sessionBuilder = MediaSession.Builder(this, forwardingPlayer)
+        val sessionBuilder = MediaSession.Builder(this, exoPlayer)
+            .setCallback(sessionCallback)
+
         if (pendingIntent != null) {
             sessionBuilder.setSessionActivity(pendingIntent)
         }
@@ -106,47 +81,37 @@ class Fr33MusicPlayerService : MediaSessionService() {
         addSession(session)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        super.onStartCommand(intent, flags, startId)
-        return START_STICKY
+    @OptIn(UnstableApi::class)
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        val player = session.player
+        val keepNotificationAlive = player.mediaItemCount > 0 && player.playbackState != Player.STATE_IDLE
+        super.onUpdateNotification(session, startInForegroundRequired || keepNotificationAlive)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
         return mediaSession
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        return START_STICKY
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val player = mediaSession?.player
-        if (player == null || !player.playWhenReady || player.mediaItemCount == 0 || player.playbackState == Player.STATE_ENDED) {
-            stopSelf()
+        val player = mediaSession?.player ?: exoPlayer
+        if (player.isPlaying || player.playWhenReady || player.playbackState == Player.STATE_BUFFERING) {
+            return
         }
+        stopSelf()
     }
 
     override fun onDestroy() {
-        serviceScope.cancel()
+        isRunning = false
         mediaSession?.run {
             removeSession(this)
             release()
             mediaSession = null
         }
         super.onDestroy()
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager = getSystemService(NotificationManager::class.java) ?: return
-            val existingChannel = notificationManager.getNotificationChannel(CHANNEL_ID)
-            if (existingChannel == null) {
-                val channel = NotificationChannel(
-                    CHANNEL_ID,
-                    "Reproducción de Fr33Music",
-                    NotificationManager.IMPORTANCE_LOW
-                ).apply {
-                    description = "Controles de reproducción multimedia y notificación en segundo plano"
-                    setShowBadge(false)
-                }
-                notificationManager.createNotificationChannel(channel)
-            }
-        }
     }
 }

@@ -28,6 +28,14 @@ interface PlaylistDao {
     """)
     fun getAllPlaylists(): Flow<List<PlaylistWithSongCount>>
 
+    @Query("""
+        SELECT p.id, p.name, p.createdAt, p.thumbnailUrl, 
+               (SELECT COUNT(*) FROM playlist_songs ps WHERE ps.playlistId = p.id) as songCount 
+        FROM playlists p 
+        ORDER BY p.createdAt DESC
+    """)
+    suspend fun getAllPlaylistsSync(): List<PlaylistWithSongCount>
+
     @Query("SELECT * FROM playlists WHERE id = :id LIMIT 1")
     fun getPlaylist(id: Long): Flow<PlaylistEntity?>
 
@@ -45,6 +53,9 @@ interface PlaylistDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSongToPlaylist(crossRef: PlaylistSongCrossRef)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSongsToPlaylist(crossRefs: List<PlaylistSongCrossRef>)
 
     @Query("DELETE FROM playlist_songs WHERE playlistId = :playlistId AND trackId = :trackId")
     suspend fun removeSongFromPlaylist(playlistId: Long, trackId: String)

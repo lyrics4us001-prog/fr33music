@@ -1,5 +1,6 @@
 package com.fr33music.core.player
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -7,20 +8,20 @@ import android.os.Build
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.session.MediaController
+import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionToken
+import com.fr33music.core.data.AudioCacheManager
 import com.fr33music.core.database.datastore.QueueDataStore
 import com.fr33music.core.domain.model.Track
-import com.fr33music.core.extractor.NewPipeDownloader
 import com.fr33music.core.extractor.StreamResolver
 import com.fr33music.core.player.service.Fr33MusicPlayerService
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -36,6 +37,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -46,23 +48,46 @@ class PlayerRepositoryImpl @Inject constructor(
     private val exoPlayer: ExoPlayer,
     private val streamResolver: StreamResolver,
     private val queueDataStore: QueueDataStore,
-    private val simpleCache: SimpleCache
+    private val simpleCache: SimpleCache,
+    private val audioCacheManager: AudioCacheManager
 ) : PlayerRepository {
+
+    override val player: ExoPlayer get() = exoPlayer
 
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val _playbackState = MutableStateFlow(PlaybackState())
     override val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
 
+    private var _mediaSession: MediaSession? = null
+    override val mediaSession: MediaSession? get() = _mediaSession
+
+    override fun attachMediaSession(session: MediaSession) {
+        _mediaSession = session
+        Log.i("PlayerRepo", "MediaSession vinculada con PlayerRepository")
+    }
+
+    override fun detachMediaSession() {
+        _mediaSession = null
+        Log.i("PlayerRepo", "MediaSession desvinculada de PlayerRepository")
+    }
+
+    private var mediaController: MediaController? = null
+    private var isConnectingController = false
+    private val pendingControllerActions = mutableListOf<(MediaController) -> Unit>()
+
     private var progressJob: Job? = null
     private val playedTrackIds = mutableSetOf<String>()
     private val shuffleHistory = ArrayDeque<Track>()
-    private var lastFailedTrackId: String? = null
-    private var playerRetryCount = 0
 
     init {
+        // 1. Iniciar servicio y conectar MediaController
         ensureServiceRunning()
+        connectMediaController()
 
-        // Restaurar estado de cola guardado en DataStore (sobrevive al cerrar la app)
+        // 2. Escuchar cambios de ExoPlayer directamente para sincronización inmediata de UI
+        setupPlayerListener(exoPlayer)
+
+        // 3. Restaurar estado de cola guardado en DataStore (sobrevive al reiniciar la app)
         repositoryScope.launch {
             val savedState = queueDataStore.getQueueStateSync()
             if (savedState.queue.isNotEmpty()) {
@@ -81,16 +106,56 @@ class PlayerRepositoryImpl @Inject constructor(
                 }
             }
         }
+    }
 
-        exoPlayer.addListener(object : Player.Listener {
+    private fun withController(action: (MediaController) -> Unit) {
+        val controller = mediaController
+        if (controller != null && controller.isConnected) {
+            action(controller)
+        } else {
+            pendingControllerActions.add(action)
+            connectMediaController()
+        }
+    }
+
+    private fun connectMediaController() {
+        if (isConnectingController) return
+        val currentCtrl = mediaController
+        if (currentCtrl != null && currentCtrl.isConnected) return
+
+        isConnectingController = true
+        ensureServiceRunning()
+
+        val sessionToken = SessionToken(context, ComponentName(context, Fr33MusicPlayerService::class.java))
+        val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+        controllerFuture.addListener({
+            isConnectingController = false
+            try {
+                val controller = controllerFuture.get()
+                mediaController = controller
+                setupPlayerListener(controller)
+                Log.i("PlayerRepo", "MediaController conectado exitosamente con Fr33MusicPlayerService")
+
+                val actions = ArrayList(pendingControllerActions)
+                pendingControllerActions.clear()
+                actions.forEach { it(controller) }
+            } catch (e: Exception) {
+                Log.e("PlayerRepo", "Error al conectar MediaController: ${e.message}", e)
+            }
+        }, ContextCompat.getMainExecutor(context))
+    }
+
+    private fun setupPlayerListener(playerTarget: Player) {
+        playerTarget.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _playbackState.update { it.copy(isPlaying = isPlaying) }
                 if (isPlaying) {
                     startProgressTracker()
                 } else {
                     stopProgressTracker()
-                    repositoryScope.launch {
-                        queueDataStore.savePlaybackPosition(exoPlayer.currentPosition)
+                    val pos = try { playerTarget.currentPosition } catch (e: Exception) { 0L }
+                    repositoryScope.launch(Dispatchers.IO) {
+                        queueDataStore.savePlaybackPosition(pos)
                     }
                 }
             }
@@ -101,10 +166,13 @@ class PlayerRepositoryImpl @Inject constructor(
                         _playbackState.update { it.copy(isLoading = true) }
                     }
                     Player.STATE_READY -> {
-                        playerRetryCount = 0
-                        lastFailedTrackId = null
-                        val currentDur = exoPlayer.duration.coerceAtLeast(0L)
+                        val dur = try {
+                            val d = playerTarget.duration
+                            if (d > 0L && d != C.TIME_UNSET) d else 0L
+                        } catch (e: Exception) { 0L }
+
                         _playbackState.update { current ->
+                            val currentDur = if (dur > 0L) dur else current.durationMs
                             val updatedQueue = if (currentDur > 0L && current.currentTrack != null && current.currentTrack!!.durationMs <= 0L) {
                                 current.queue.mapIndexed { idx, t ->
                                     if (idx == current.currentIndex) t.copy(durationMs = currentDur) else t
@@ -114,14 +182,13 @@ class PlayerRepositoryImpl @Inject constructor(
                             current.copy(
                                 isLoading = false,
                                 error = null,
-                                durationMs = if (currentDur > 0L) currentDur else current.durationMs,
+                                durationMs = currentDur,
                                 queue = updatedQueue
                             )
                         }
                     }
                     Player.STATE_ENDED -> {
                         _playbackState.update { it.copy(isLoading = false) }
-                        repositoryScope.launch { next() }
                     }
                     Player.STATE_IDLE -> {
                         _playbackState.update { it.copy(isLoading = false) }
@@ -129,39 +196,90 @@ class PlayerRepositoryImpl @Inject constructor(
                 }
             }
 
-            override fun onPlayerError(error: PlaybackException) {
-                Log.e("PlayerRepo", "ExoPlayer onPlayerError: ${error.message} (código: ${error.errorCode})", error)
-                val currentTrack = _playbackState.value.currentTrack
-                val is403OrHttp = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-                        error.message?.contains("403") == true ||
-                        error.cause?.message?.contains("403") == true ||
-                        error.cause?.javaClass?.simpleName?.contains("HttpDataSource") == true
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val mediaId = mediaItem?.mediaId
+                val currentQueue = _playbackState.value.queue
+                val foundIndex = if (!mediaId.isNullOrBlank()) {
+                    currentQueue.indexOfFirst { it.trackId == mediaId }
+                } else {
+                    playerTarget.currentMediaItemIndex
+                }
+                val validIndex = if (foundIndex in currentQueue.indices) foundIndex else playerTarget.currentMediaItemIndex
 
-                if (is403OrHttp && currentTrack != null && (lastFailedTrackId != currentTrack.trackId || playerRetryCount < 2)) {
-                    if (lastFailedTrackId != currentTrack.trackId) {
-                        lastFailedTrackId = currentTrack.trackId
-                        playerRetryCount = 1
-                    } else {
-                        playerRetryCount++
-                    }
-                    val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
-                    Log.w("PlayerRepo", "Detectado error 403 / HTTP en pista ${currentTrack.trackId}. Reintentando con stream fresco (intento $playerRetryCount/2)...")
-                    repositoryScope.launch {
-                        delay(600)
-                        resolveAndPlay(currentTrack, pos)
-                    }
-                    return
+                _playbackState.update { current ->
+                    val track = current.queue.getOrNull(validIndex)
+                    current.copy(
+                        currentIndex = validIndex,
+                        durationMs = track?.durationMs?.takeIf { it > 0L } ?: current.durationMs
+                    )
                 }
 
+                if (validIndex in currentQueue.indices) {
+                    playedTrackIds.add(currentQueue[validIndex].trackId)
+                    repositoryScope.launch(Dispatchers.IO) {
+                        queueDataStore.saveCurrentIndex(validIndex)
+                    }
+                }
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                val newPos = newPosition.positionMs.coerceAtLeast(0L)
+                _playbackState.update { it.copy(positionMs = newPos) }
+                repositoryScope.launch(Dispatchers.IO) {
+                    queueDataStore.savePlaybackPosition(newPos)
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                Log.e("PlayerRepo", "Error de reproducción: ${error.message} (código: ${error.errorCode})", error)
+                val errorMessage = if (error.message?.contains("age-restricted", ignoreCase = true) == true ||
+                    error.message?.contains("sign in to confirm your age", ignoreCase = true) == true
+                ) {
+                    "Este video tiene restricción de edad y no se puede reproducir de forma anónima."
+                } else {
+                    error.message ?: "Error al reproducir pista"
+                }
                 _playbackState.update {
                     it.copy(
                         isLoading = false,
                         isPlaying = false,
-                        error = error.message ?: "Error de reproducción"
+                        error = errorMessage
                     )
                 }
             }
         })
+    }
+
+    private fun trackToMediaItem(track: Track): MediaItem {
+        val downloadsDir = File(context.filesDir, "downloads")
+        val localCoverFile = File(downloadsDir, "${track.trackId}.jpg")
+        val trackThumb = track.thumbnailUrl
+        val safeThumbnailUri = when {
+            localCoverFile.exists() && localCoverFile.length() > 0 -> Uri.fromFile(localCoverFile)
+            !trackThumb.isNullOrBlank() && !trackThumb.startsWith("file:") -> Uri.parse(trackThumb)
+            else -> Uri.parse("https://i.ytimg.com/vi/${track.trackId}/hqdefault.jpg")
+        }
+
+        val metadata = MediaMetadata.Builder()
+            .setTitle(track.title)
+            .setArtist(track.artistName)
+            .apply {
+                if (track.durationMs > 0L) {
+                    setDurationMs(track.durationMs)
+                }
+                setArtworkUri(safeThumbnailUri)
+            }
+            .build()
+
+        return MediaItem.Builder()
+            .setMediaId(track.trackId)
+            .setUri(Uri.parse("fr33music://track/${track.trackId}"))
+            .setMediaMetadata(metadata)
+            .build()
     }
 
     override suspend fun play(track: Track) {
@@ -169,53 +287,95 @@ class PlayerRepositoryImpl @Inject constructor(
         val existingIndex = currentQueue.indexOfFirst { it.trackId == track.trackId }
 
         val newQueue: List<Track>
-        val newIndex: Int
+        val targetIndex: Int
         if (existingIndex >= 0) {
             newQueue = currentQueue
-            newIndex = existingIndex
+            targetIndex = existingIndex
         } else {
             newQueue = currentQueue + track
-            newIndex = newQueue.lastIndex
+            targetIndex = newQueue.lastIndex
         }
 
         _playbackState.update {
-            it.copy(queue = newQueue, currentIndex = newIndex)
+            it.copy(
+                queue = newQueue,
+                currentIndex = targetIndex,
+                isPlaying = true,
+                isLoading = true,
+                error = null
+            )
         }
         playedTrackIds.add(track.trackId)
         shuffleHistory.clear()
-        queueDataStore.saveQueue(newQueue, newIndex, _playbackState.value.isShuffle)
-        resolveAndPlay(track)
+
+        repositoryScope.launch(Dispatchers.IO) {
+            queueDataStore.saveQueue(newQueue, targetIndex, _playbackState.value.isShuffle)
+        }
+
+        withContext(Dispatchers.Main) {
+            withController { controller ->
+                if (existingIndex >= 0 && controller.mediaItemCount == newQueue.size) {
+                    controller.seekTo(targetIndex, 0L)
+                    controller.play()
+                } else {
+                    val mediaItems = newQueue.map { trackToMediaItem(it) }
+                    controller.setMediaItems(mediaItems, targetIndex, 0L)
+                    controller.prepare()
+                    controller.play()
+                }
+            }
+        }
     }
 
     override suspend fun setQueue(list: List<Track>, startIndex: Int) {
         if (list.isEmpty()) return
         val validIndex = startIndex.coerceIn(0, list.lastIndex)
         _playbackState.update {
-            it.copy(queue = list, currentIndex = validIndex)
+            it.copy(
+                queue = list,
+                currentIndex = validIndex,
+                isPlaying = true,
+                isLoading = true,
+                error = null
+            )
         }
         playedTrackIds.clear()
         playedTrackIds.add(list[validIndex].trackId)
         shuffleHistory.clear()
-        queueDataStore.saveQueue(list, validIndex, _playbackState.value.isShuffle)
-        resolveAndPlay(list[validIndex])
+
+        repositoryScope.launch(Dispatchers.IO) {
+            queueDataStore.saveQueue(list, validIndex, _playbackState.value.isShuffle)
+        }
+
+        val mediaItems = list.map { trackToMediaItem(it) }
+
+        withContext(Dispatchers.Main) {
+            withController { controller ->
+                controller.setMediaItems(mediaItems, validIndex, 0L)
+                controller.prepare()
+                controller.play()
+            }
+        }
     }
 
     override fun togglePlayPause() {
-        try {
-            if (exoPlayer.isPlaying) {
-                exoPlayer.pause()
+        withController { controller ->
+            if (controller.isPlaying || controller.playWhenReady) {
+                controller.pause()
             } else {
-                if (exoPlayer.playbackState == Player.STATE_IDLE && _playbackState.value.currentTrack != null) {
-                    repositoryScope.launch {
-                        val track = _playbackState.value.currentTrack ?: return@launch
-                        resolveAndPlay(track, initialPositionMs = _playbackState.value.positionMs)
+                if (controller.playbackState == Player.STATE_IDLE || controller.mediaItemCount == 0) {
+                    val queue = _playbackState.value.queue
+                    if (queue.isNotEmpty()) {
+                        val index = _playbackState.value.currentIndex.coerceIn(0, queue.lastIndex)
+                        val mediaItems = queue.map { trackToMediaItem(it) }
+                        controller.setMediaItems(mediaItems, index, _playbackState.value.positionMs)
+                        controller.prepare()
+                        controller.play()
                     }
                 } else {
-                    exoPlayer.play()
+                    controller.play()
                 }
             }
-        } catch (e: Exception) {
-            _playbackState.update { it.copy(error = e.message) }
         }
     }
 
@@ -226,6 +386,9 @@ class PlayerRepositoryImpl @Inject constructor(
         shuffleHistory.clear()
         if (newShuffle) {
             _playbackState.value.currentTrack?.let { playedTrackIds.add(it.trackId) }
+        }
+        withController { controller ->
+            controller.shuffleModeEnabled = newShuffle
         }
         repositoryScope.launch {
             queueDataStore.saveShuffle(newShuffle)
@@ -238,12 +401,8 @@ class PlayerRepositoryImpl @Inject constructor(
 
         val nextIndex: Int
         if (state.isShuffle) {
-            // Guardar canción actual en shuffleHistory antes de avanzar
-            state.currentTrack?.let { current ->
-                shuffleHistory.addLast(current)
-            }
+            state.currentTrack?.let { shuffleHistory.addLast(it) }
 
-            // Regla de Shuffle: aleatorio de los que no están en el Set. Si se agota, limpiar y empezar
             val unplayed = state.queue.filter { it.trackId !in playedTrackIds }
             val chosenTrack = if (unplayed.isNotEmpty()) {
                 unplayed.random()
@@ -261,10 +420,22 @@ class PlayerRepositoryImpl @Inject constructor(
             nextIndex = (state.currentIndex + 1) % state.queue.size
         }
 
-        if (nextIndex in state.queue.indices) {
-            _playbackState.update { it.copy(currentIndex = nextIndex) }
-            queueDataStore.saveCurrentIndex(nextIndex)
-            resolveAndPlay(state.queue[nextIndex])
+        withContext(Dispatchers.Main) {
+            withController { controller ->
+                _playbackState.update { it.copy(currentIndex = nextIndex, isPlaying = true) }
+                repositoryScope.launch(Dispatchers.IO) {
+                    queueDataStore.saveCurrentIndex(nextIndex)
+                }
+                if (controller.mediaItemCount == state.queue.size) {
+                    controller.seekTo(nextIndex, 0L)
+                    controller.play()
+                } else {
+                    val mediaItems = state.queue.map { trackToMediaItem(it) }
+                    controller.setMediaItems(mediaItems, nextIndex, 0L)
+                    controller.prepare()
+                    controller.play()
+                }
+            }
         }
     }
 
@@ -272,194 +443,95 @@ class PlayerRepositoryImpl @Inject constructor(
         val state = _playbackState.value
         if (state.queue.isEmpty()) return
 
-        if (exoPlayer.currentPosition > 3000L) {
-            seekTo(0L)
-            return
-        }
+        withContext(Dispatchers.Main) {
+            withController { controller ->
+                val currentPos = try { controller.currentPosition } catch (e: Exception) { 0L }
+                if (currentPos > 3000L) {
+                    controller.seekTo(0L)
+                    controller.play()
+                    return@withController
+                }
 
-        // Si Shuffle está activo y hay historial, volver a la canción anterior del historial
-        if (state.isShuffle && shuffleHistory.isNotEmpty()) {
-            val prevTrack = shuffleHistory.removeLast()
-            val foundIdx = state.queue.indexOfFirst { it.trackId == prevTrack.trackId }
-            val prevIndex = if (foundIdx in state.queue.indices) foundIdx else state.currentIndex
-            _playbackState.update { it.copy(currentIndex = prevIndex) }
-            queueDataStore.saveCurrentIndex(prevIndex)
-            resolveAndPlay(prevTrack)
-            return
-        }
+                val prevIndex: Int
+                if (state.isShuffle && shuffleHistory.isNotEmpty()) {
+                    val prevTrack = shuffleHistory.removeLast()
+                    val foundIdx = state.queue.indexOfFirst { it.trackId == prevTrack.trackId }
+                    prevIndex = if (foundIdx in state.queue.indices) foundIdx else state.currentIndex
+                } else {
+                    prevIndex = if (state.currentIndex > 0) state.currentIndex - 1 else state.queue.lastIndex
+                }
 
-        val prevIndex = if (state.currentIndex > 0) state.currentIndex - 1 else state.queue.lastIndex
-        _playbackState.update { it.copy(currentIndex = prevIndex) }
-        queueDataStore.saveCurrentIndex(prevIndex)
-        resolveAndPlay(state.queue[prevIndex])
+                _playbackState.update { it.copy(currentIndex = prevIndex, isPlaying = true) }
+                repositoryScope.launch(Dispatchers.IO) {
+                    queueDataStore.saveCurrentIndex(prevIndex)
+                }
+                if (controller.mediaItemCount == state.queue.size) {
+                    controller.seekTo(prevIndex, 0L)
+                    controller.play()
+                } else {
+                    val mediaItems = state.queue.map { trackToMediaItem(it) }
+                    controller.setMediaItems(mediaItems, prevIndex, 0L)
+                    controller.prepare()
+                    controller.play()
+                }
+            }
+        }
     }
 
     override fun seekTo(positionMs: Long) {
-        try {
-            exoPlayer.seekTo(positionMs)
-            _playbackState.update { it.copy(positionMs = positionMs) }
-            repositoryScope.launch {
-                queueDataStore.savePlaybackPosition(positionMs)
-            }
-        } catch (e: Exception) {
-            _playbackState.update { it.copy(error = e.message) }
-        }
-    }
+        withController { controller ->
+            try {
+                val totalDuration = _playbackState.value.durationMs.takeIf { it > 0L }
+                    ?: _playbackState.value.currentTrack?.durationMs?.takeIf { it > 0L }
+                    ?: try {
+                        val d = controller.duration
+                        if (d > 0L && d != C.TIME_UNSET) d else null
+                    } catch (_: Exception) { null }
 
-    @OptIn(UnstableApi::class)
-    private suspend fun resolveAndPlay(track: Track, initialPositionMs: Long = 0L) {
-        _playbackState.update { it.copy(isLoading = true, error = null) }
-
-        try {
-            val result = streamResolver.resolveAudio(track)
-            result.fold(
-                onSuccess = { stream ->
-                    try {
-                        val parsedUri = Uri.parse(stream.url)
-                        val isLocalFile = stream.url.startsWith("file://") ||
-                                stream.url.startsWith("file:/") ||
-                                stream.url.startsWith("content://") ||
-                                parsedUri.scheme == "file" ||
-                                parsedUri.scheme == "content"
-
-                        val isLocalArtwork = track.thumbnailUrl?.startsWith("file:") == true || track.thumbnailUrl?.startsWith("content:") == true
-
-                        // 1. Cargar carátula en ByteArray ANTES de construir el MediaItem
-                        // usando la caché de disco de Coil (funciona offline) para evitar cuadros blancos.
-                        val artworkBytes = loadArtworkBytes(track.thumbnailUrl)
-
-                        val mediaMetadataBuilder = MediaMetadata.Builder()
-                            .setTitle(track.title)
-                            .setArtist(track.artistName)
-
-                        if (artworkBytes != null) {
-                            mediaMetadataBuilder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                        }
-
-                        if (isLocalArtwork && !track.thumbnailUrl.isNullOrBlank()) {
-                            mediaMetadataBuilder.setArtworkUri(Uri.parse(track.thumbnailUrl))
-                        }
-                        val metadata = mediaMetadataBuilder.build()
-
-                        val mediaItem = MediaItem.Builder()
-                            .setUri(parsedUri)
-                            .setMediaId(track.trackId)
-                            .setMediaMetadata(metadata)
-                            .build()
-
-                        // 2. Configurar la fuente de datos:
-                        // Si la URI empieza con file:// o content://, usar DefaultDataSource.Factory(context) SIN headers de red ni caché.
-                        // Si la URI empieza con http:// o https://, usar DefaultHttpDataSource.Factory envuelto en CacheDataSource.Factory.
-                        val dataSourceFactory = if (isLocalFile) {
-                            Log.i("PlayerRepo", "Reproduciendo archivo local sin headers de red ni caché: ${stream.url}")
-                            DefaultDataSource.Factory(context)
-                        } else {
-                            Log.i("PlayerRepo", "Reproduciendo stream remoto desde YouTube con caché y timeouts HTTP: ${stream.url}")
-                            val userAgent = stream.headers["User-Agent"] ?: NewPipeDownloader.USER_AGENT
-                            val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-                                .setUserAgent(userAgent)
-                                .setDefaultRequestProperties(stream.headers)
-                                .setAllowCrossProtocolRedirects(true)
-                                .setConnectTimeoutMs(15000)
-                                .setReadTimeoutMs(15000)
-
-                            val cacheDataSourceFactory = CacheDataSource.Factory()
-                                .setCache(simpleCache)
-                                .setUpstreamDataSourceFactory(httpDataSourceFactory)
-                                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-
-                            DefaultDataSource.Factory(context, cacheDataSourceFactory)
-                        }
-
-                        val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                            .createMediaSource(mediaItem)
-
-                        exoPlayer.setMediaSource(mediaSource)
-                        exoPlayer.playlistMetadata = metadata
-                        exoPlayer.prepare()
-                        if (initialPositionMs > 0L) {
-                            exoPlayer.seekTo(initialPositionMs)
-                        }
-                        exoPlayer.play()
-
-                        ensureServiceRunning()
-
-                        // 3. Si artworkBytes no se cargó de inmediato, intentar cargar en segundo plano y actualizar MediaItem
-                        if (artworkBytes == null && !track.thumbnailUrl.isNullOrBlank()) {
-                            repositoryScope.launch(Dispatchers.IO) {
-                                val bytes = loadArtworkBytes(track.thumbnailUrl)
-                                if (bytes != null && _playbackState.value.currentTrack?.trackId == track.trackId) {
-                                    val updatedMetadata = MediaMetadata.Builder()
-                                        .setTitle(track.title)
-                                        .setArtist(track.artistName)
-                                        .setArtworkData(bytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                                        .build()
-
-                                    withContext(Dispatchers.Main) {
-                                        exoPlayer.playlistMetadata = updatedMetadata
-                                        val currentItem = exoPlayer.currentMediaItem
-                                        if (currentItem != null) {
-                                            val updatedItem = currentItem.buildUpon()
-                                                .setMediaMetadata(updatedMetadata)
-                                                .build()
-                                            exoPlayer.replaceMediaItem(exoPlayer.currentMediaItemIndex, updatedItem)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e("PlayerRepo", "Error al inicializar el reproductor: ${e.message}", e)
-                        _playbackState.update {
-                            it.copy(
-                                isLoading = false,
-                                isPlaying = false,
-                                error = e.message ?: "Error al inicializar el reproductor"
-                            )
-                        }
-                    }
-                },
-                onFailure = { throwable ->
-                    Log.e("PlayerRepo", "Fallo al resolver audio para ${track.trackId}: ${throwable.message}", throwable)
-                    _playbackState.update {
-                        it.copy(
-                            isLoading = false,
-                            isPlaying = false,
-                            error = throwable.message ?: "No se pudo reproducir este tema"
-                        )
-                    }
+                val validPos = when {
+                    positionMs < 0L -> 0L
+                    totalDuration != null && totalDuration > 1000L && positionMs >= totalDuration -> (totalDuration - 1000L).coerceAtLeast(0L)
+                    totalDuration != null && positionMs > totalDuration -> (totalDuration - 1000L).coerceAtLeast(0L)
+                    else -> positionMs.coerceAtLeast(0L)
                 }
-            )
-        } catch (e: Exception) {
-            Log.e("PlayerRepo", "Excepción al resolver y reproducir: ${e.message}", e)
-            _playbackState.update {
-                it.copy(
-                    isLoading = false,
-                    isPlaying = false,
-                    error = e.message ?: "Error al obtener el stream de audio"
-                )
+
+                controller.seekTo(validPos)
+                _playbackState.update { it.copy(positionMs = validPos) }
+                repositoryScope.launch(Dispatchers.IO) {
+                    queueDataStore.savePlaybackPosition(validPos)
+                }
+            } catch (e: Exception) {
+                Log.w("PlayerRepo", "Error en seekTo($positionMs): ${e.message}", e)
             }
         }
     }
 
     private fun ensureServiceRunning() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            try {
-                val serviceIntent = Intent(context, Fr33MusicPlayerService::class.java)
+        if (Fr33MusicPlayerService.isRunning) return
+        try {
+            val serviceIntent = Intent(context, Fr33MusicPlayerService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ContextCompat.startForegroundService(context, serviceIntent)
-            } catch (_: Exception) {
-                // Service already running or background restrictions
+            } else {
+                context.startService(serviceIntent)
             }
+        } catch (e: Exception) {
+            Log.e("PlayerRepo", "No se pudo iniciar el servicio de reproducción: ${e.message}", e)
         }
     }
 
     private fun startProgressTracker() {
         progressJob?.cancel()
-        progressJob = repositoryScope.launch {
+        progressJob = repositoryScope.launch(Dispatchers.Main) {
             var counter = 0
             while (isActive) {
-                val currentPos = exoPlayer.currentPosition
-                val currentDur = exoPlayer.duration.coerceAtLeast(0L)
+                val playerTarget = mediaController ?: exoPlayer
+                val currentPos = try { playerTarget.currentPosition.coerceAtLeast(0L) } catch (e: Exception) { 0L }
+                val currentDur = try {
+                    val d = playerTarget.duration
+                    if (d > 0L && d != C.TIME_UNSET) d else 0L
+                } catch (e: Exception) { 0L }
+
                 _playbackState.update { current ->
                     val updatedQueue = if (currentDur > 0L && current.currentTrack != null && current.currentTrack!!.durationMs <= 0L) {
                         current.queue.mapIndexed { idx, t ->
@@ -474,8 +546,10 @@ class PlayerRepositoryImpl @Inject constructor(
                     )
                 }
                 counter++
-                if (counter % 4 == 0) { // Persistir posición cada 2 segundos
-                    queueDataStore.savePlaybackPosition(currentPos)
+                if (counter % 4 == 0) {
+                    launch(Dispatchers.IO) {
+                        queueDataStore.savePlaybackPosition(currentPos)
+                    }
                 }
                 delay(500L)
             }
@@ -485,39 +559,5 @@ class PlayerRepositoryImpl @Inject constructor(
     private fun stopProgressTracker() {
         progressJob?.cancel()
         progressJob = null
-    }
-
-    private suspend fun loadArtworkBytes(url: String?): ByteArray? {
-        if (url.isNullOrBlank()) return null
-        return withContext(Dispatchers.IO) {
-            try {
-                val loader = coil.Coil.imageLoader(context)
-                val request = coil.request.ImageRequest.Builder(context)
-                    .data(url)
-                    .allowHardware(false)
-                    .build()
-                val result = loader.execute(request)
-                val drawable = result.drawable ?: return@withContext null
-                val bitmap = if (drawable is android.graphics.drawable.BitmapDrawable) {
-                    drawable.bitmap
-                } else {
-                    val bmp = android.graphics.Bitmap.createBitmap(
-                        drawable.intrinsicWidth.coerceAtLeast(1),
-                        drawable.intrinsicHeight.coerceAtLeast(1),
-                        android.graphics.Bitmap.Config.ARGB_8888
-                    )
-                    val canvas = android.graphics.Canvas(bmp)
-                    drawable.setBounds(0, 0, canvas.width, canvas.height)
-                    drawable.draw(canvas)
-                    bmp
-                }
-                val stream = java.io.ByteArrayOutputStream()
-                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, stream)
-                stream.toByteArray()
-            } catch (e: Exception) {
-                Log.e("PlayerRepo", "Error cargando carátula para notificación: ${e.message}")
-                null
-            }
-        }
     }
 }
