@@ -80,14 +80,17 @@ class PlayerRepositoryImpl @Inject constructor(
     private val shuffleHistory = ArrayDeque<Track>()
 
     init {
-        // 1. Iniciar servicio y conectar MediaController
+        // 1. Configurar repeatMode por defecto a REPEAT_MODE_ALL para que hasNextMediaItem() siempre sea true
+        exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
+
+        // 2. Iniciar servicio y conectar MediaController
         ensureServiceRunning()
         connectMediaController()
 
-        // 2. Escuchar cambios de ExoPlayer directamente para sincronización inmediata de UI
+        // 3. Escuchar cambios de ExoPlayer directamente para sincronización inmediata de UI
         setupPlayerListener(exoPlayer)
 
-        // 3. Restaurar estado de cola guardado en DataStore (sobrevive al reiniciar la app)
+        // 4. Restaurar estado de cola guardado en DataStore (sobrevive al reiniciar la app)
         repositoryScope.launch {
             val savedState = queueDataStore.getQueueStateSync()
             if (savedState.queue.isNotEmpty()) {
@@ -101,8 +104,10 @@ class PlayerRepositoryImpl @Inject constructor(
                         isPlaying = false
                     )
                 }
-                if (savedState.isShuffle) {
-                    savedState.queue.getOrNull(validIndex)?.let { playedTrackIds.add(it.trackId) }
+                exoPlayer.shuffleModeEnabled = savedState.isShuffle
+                withController {
+                    it.repeatMode = Player.REPEAT_MODE_ALL
+                    it.shuffleModeEnabled = savedState.isShuffle
                 }
             }
         }
@@ -133,8 +138,10 @@ class PlayerRepositoryImpl @Inject constructor(
             try {
                 val controller = controllerFuture.get()
                 mediaController = controller
+                controller.repeatMode = Player.REPEAT_MODE_ALL
+                controller.shuffleModeEnabled = _playbackState.value.isShuffle
                 setupPlayerListener(controller)
-                Log.i("PlayerRepo", "MediaController conectado exitosamente con Fr33MusicPlayerService")
+                Log.i("PlayerRepo", "MediaController conectado exitosamente con Fr33MusicPlayerService (repeatMode=ALL, shuffle=${_playbackState.value.isShuffle})")
 
                 val actions = ArrayList(pendingControllerActions)
                 pendingControllerActions.clear()
@@ -234,6 +241,19 @@ class PlayerRepositoryImpl @Inject constructor(
                 }
             }
 
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                _playbackState.update { it.copy(isShuffle = shuffleModeEnabled) }
+                repositoryScope.launch(Dispatchers.IO) {
+                    queueDataStore.saveShuffle(shuffleModeEnabled)
+                }
+            }
+
+            override fun onRepeatModeChanged(repeatMode: Int) {
+                if (repeatMode != Player.REPEAT_MODE_ALL) {
+                    withController { it.repeatMode = Player.REPEAT_MODE_ALL }
+                }
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("PlayerRepo", "Error de reproducción: ${error.message} (código: ${error.errorCode})", error)
                 val errorMessage = if (error.message?.contains("age-restricted", ignoreCase = true) == true ||
@@ -314,6 +334,8 @@ class PlayerRepositoryImpl @Inject constructor(
 
         withContext(Dispatchers.Main) {
             withController { controller ->
+                controller.repeatMode = Player.REPEAT_MODE_ALL
+                controller.shuffleModeEnabled = _playbackState.value.isShuffle
                 if (existingIndex >= 0 && controller.mediaItemCount == newQueue.size) {
                     controller.seekTo(targetIndex, 0L)
                     controller.play()
@@ -339,9 +361,6 @@ class PlayerRepositoryImpl @Inject constructor(
                 error = null
             )
         }
-        playedTrackIds.clear()
-        playedTrackIds.add(list[validIndex].trackId)
-        shuffleHistory.clear()
 
         repositoryScope.launch(Dispatchers.IO) {
             queueDataStore.saveQueue(list, validIndex, _playbackState.value.isShuffle)
@@ -351,6 +370,8 @@ class PlayerRepositoryImpl @Inject constructor(
 
         withContext(Dispatchers.Main) {
             withController { controller ->
+                controller.repeatMode = Player.REPEAT_MODE_ALL
+                controller.shuffleModeEnabled = _playbackState.value.isShuffle
                 controller.setMediaItems(mediaItems, validIndex, 0L)
                 controller.prepare()
                 controller.play()
@@ -368,6 +389,8 @@ class PlayerRepositoryImpl @Inject constructor(
                     if (queue.isNotEmpty()) {
                         val index = _playbackState.value.currentIndex.coerceIn(0, queue.lastIndex)
                         val mediaItems = queue.map { trackToMediaItem(it) }
+                        controller.repeatMode = Player.REPEAT_MODE_ALL
+                        controller.shuffleModeEnabled = _playbackState.value.isShuffle
                         controller.setMediaItems(mediaItems, index, _playbackState.value.positionMs)
                         controller.prepare()
                         controller.play()
@@ -382,11 +405,6 @@ class PlayerRepositoryImpl @Inject constructor(
     override fun toggleShuffle() {
         val newShuffle = !_playbackState.value.isShuffle
         _playbackState.update { it.copy(isShuffle = newShuffle) }
-        playedTrackIds.clear()
-        shuffleHistory.clear()
-        if (newShuffle) {
-            _playbackState.value.currentTrack?.let { playedTrackIds.add(it.trackId) }
-        }
         withController { controller ->
             controller.shuffleModeEnabled = newShuffle
         }
@@ -399,40 +417,18 @@ class PlayerRepositoryImpl @Inject constructor(
         val state = _playbackState.value
         if (state.queue.isEmpty()) return
 
-        val nextIndex: Int
-        if (state.isShuffle) {
-            state.currentTrack?.let { shuffleHistory.addLast(it) }
-
-            val unplayed = state.queue.filter { it.trackId !in playedTrackIds }
-            val chosenTrack = if (unplayed.isNotEmpty()) {
-                unplayed.random()
-            } else {
-                playedTrackIds.clear()
-                state.currentTrack?.let { playedTrackIds.add(it.trackId) }
-                val remaining = state.queue.filter { it.trackId !in playedTrackIds }
-                remaining.randomOrNull() ?: state.currentTrack ?: state.queue.firstOrNull()
-            }
-            if (chosenTrack == null) return
-            playedTrackIds.add(chosenTrack.trackId)
-            val foundIdx = state.queue.indexOfFirst { it.trackId == chosenTrack.trackId }
-            nextIndex = if (foundIdx in state.queue.indices) foundIdx else 0
-        } else {
-            nextIndex = (state.currentIndex + 1) % state.queue.size
-        }
-
         withContext(Dispatchers.Main) {
             withController { controller ->
-                _playbackState.update { it.copy(currentIndex = nextIndex, isPlaying = true) }
-                repositoryScope.launch(Dispatchers.IO) {
-                    queueDataStore.saveCurrentIndex(nextIndex)
-                }
-                if (controller.mediaItemCount == state.queue.size) {
-                    controller.seekTo(nextIndex, 0L)
+                if (controller.mediaItemCount != state.queue.size) {
+                    val mediaItems = state.queue.map { trackToMediaItem(it) }
+                    val nextIdx = (state.currentIndex + 1) % state.queue.size
+                    controller.repeatMode = Player.REPEAT_MODE_ALL
+                    controller.shuffleModeEnabled = state.isShuffle
+                    controller.setMediaItems(mediaItems, nextIdx, 0L)
+                    controller.prepare()
                     controller.play()
                 } else {
-                    val mediaItems = state.queue.map { trackToMediaItem(it) }
-                    controller.setMediaItems(mediaItems, nextIndex, 0L)
-                    controller.prepare()
+                    controller.seekToNextMediaItem()
                     controller.play()
                 }
             }
@@ -452,26 +448,16 @@ class PlayerRepositoryImpl @Inject constructor(
                     return@withController
                 }
 
-                val prevIndex: Int
-                if (state.isShuffle && shuffleHistory.isNotEmpty()) {
-                    val prevTrack = shuffleHistory.removeLast()
-                    val foundIdx = state.queue.indexOfFirst { it.trackId == prevTrack.trackId }
-                    prevIndex = if (foundIdx in state.queue.indices) foundIdx else state.currentIndex
-                } else {
-                    prevIndex = if (state.currentIndex > 0) state.currentIndex - 1 else state.queue.lastIndex
-                }
-
-                _playbackState.update { it.copy(currentIndex = prevIndex, isPlaying = true) }
-                repositoryScope.launch(Dispatchers.IO) {
-                    queueDataStore.saveCurrentIndex(prevIndex)
-                }
-                if (controller.mediaItemCount == state.queue.size) {
-                    controller.seekTo(prevIndex, 0L)
+                if (controller.mediaItemCount != state.queue.size) {
+                    val mediaItems = state.queue.map { trackToMediaItem(it) }
+                    val prevIdx = if (state.currentIndex > 0) state.currentIndex - 1 else state.queue.lastIndex
+                    controller.repeatMode = Player.REPEAT_MODE_ALL
+                    controller.shuffleModeEnabled = state.isShuffle
+                    controller.setMediaItems(mediaItems, prevIdx, 0L)
+                    controller.prepare()
                     controller.play()
                 } else {
-                    val mediaItems = state.queue.map { trackToMediaItem(it) }
-                    controller.setMediaItems(mediaItems, prevIndex, 0L)
-                    controller.prepare()
+                    controller.seekToPreviousMediaItem()
                     controller.play()
                 }
             }

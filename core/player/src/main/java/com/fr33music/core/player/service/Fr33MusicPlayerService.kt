@@ -52,6 +52,8 @@ class Fr33MusicPlayerService : MediaSessionService() {
                     .add(Player.COMMAND_PLAY_PAUSE)
                     .add(Player.COMMAND_PREPARE)
                     .add(Player.COMMAND_STOP)
+                    .add(Player.COMMAND_SET_REPEAT_MODE)
+                    .add(Player.COMMAND_SET_SHUFFLE_MODE)
                     .add(Player.COMMAND_SET_MEDIA_ITEMS_METADATA)
                     .add(Player.COMMAND_CHANGE_MEDIA_ITEMS)
                     .build()

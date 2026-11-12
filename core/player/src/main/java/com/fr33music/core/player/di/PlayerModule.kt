@@ -185,6 +185,10 @@ object PlayerModule {
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setLoadControl(loadControl)
             .build()
+            .apply {
+                // Activar REPEAT_MODE_ALL por defecto para que hasNextMediaItem() siempre sea true
+                repeatMode = androidx.media3.common.Player.REPEAT_MODE_ALL
+            }
     }
 
     @Provides

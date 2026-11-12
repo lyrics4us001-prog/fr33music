@@ -151,9 +151,13 @@ fun SearchScreen(
             isLoading = isLoadingChannel,
             savedTrackIds = savedTrackIds,
             onBack = { viewModel.selectChannel(null) },
-            onTrackClick = { track ->
-                viewModel.onTrackClick(track)
+            onTrackClick = { track, list, index ->
+                viewModel.playAll(list, index)
                 onTrackSelected(track)
+            },
+            onPlayAll = { list, shuffle ->
+                viewModel.playAll(list, 0, shuffle)
+                list.firstOrNull()?.let { onTrackSelected(it) }
             },
             onToggleSave = viewModel::toggleSave,
             onAddToPlaylist = { track -> songForPlaylistDialog = track },
@@ -178,8 +182,8 @@ fun SearchScreen(
                 viewModel.albumScrollOffset = 0
                 viewModel.selectAlbum(null)
             },
-            onTrackClick = { track ->
-                viewModel.onTrackClick(track)
+            onTrackClick = { track, list, index ->
+                viewModel.playAll(list, index)
                 onTrackSelected(track)
             },
             onPlayAll = { tracks, shuffle ->
@@ -668,7 +672,8 @@ private fun SearchChannelDetailView(
     isLoading: Boolean,
     savedTrackIds: Set<String>,
     onBack: () -> Unit,
-    onTrackClick: (Track) -> Unit,
+    onTrackClick: (Track, List<Track>, Int) -> Unit,
+    onPlayAll: (List<Track>, Boolean) -> Unit = { _, _ -> },
     onToggleSave: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
     onBulkAddToPlaylist: (List<Track>) -> Unit = {}
@@ -829,8 +834,25 @@ private fun SearchChannelDetailView(
                         Text(
                             text = "Vídeos subidos (${filteredVideos.size})",
                             style = Fr33Typography.titleMedium,
-                            color = ColorTextPrimary
+                            color = ColorTextPrimary,
+                            modifier = Modifier.weight(1f)
                         )
+                        if (filteredVideos.isNotEmpty()) {
+                            IconButton(onClick = { onPlayAll(filteredVideos, false) }) {
+                                Icon(
+                                    imageVector = Icons.Default.PlayArrow,
+                                    contentDescription = "Reproducir todo",
+                                    tint = ColorPrimary
+                                )
+                            }
+                            IconButton(onClick = { onPlayAll(filteredVideos, true) }) {
+                                Icon(
+                                    imageVector = Icons.Default.Shuffle,
+                                    contentDescription = "Aleatorio",
+                                    tint = ColorPrimary
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -882,10 +904,10 @@ private fun SearchChannelDetailView(
                 itemsIndexed(
                     items = filteredVideos,
                     key = { index, track -> "${track.trackId}_$index" }
-                ) { _, track ->
+                ) { index, track ->
                     TrackRow(
                         track = track,
-                        onClick = { onTrackClick(track) },
+                        onClick = { onTrackClick(track, filteredVideos, index) },
                         trailingContent = {
                             val isSaved = savedTrackIds.contains(track.trackId)
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -930,7 +952,7 @@ private fun SearchAlbumDetailView(
     initialScrollOffset: Int = 0,
     onSaveState: (index: Int, offset: Int) -> Unit = { _, _ -> },
     onBack: () -> Unit,
-    onTrackClick: (Track) -> Unit,
+    onTrackClick: (Track, List<Track>, Int) -> Unit,
     onPlayAll: (List<Track>, Boolean) -> Unit,
     onDownloadAll: (List<Track>) -> Unit = {},
     onToggleSave: (Track) -> Unit,
@@ -1140,10 +1162,10 @@ private fun SearchAlbumDetailView(
                 itemsIndexed(
                     items = filteredTracks,
                     key = { index, track -> "${track.trackId}_$index" }
-                ) { _, track ->
+                ) { index, track ->
                     TrackRow(
                         track = track,
-                        onClick = { onTrackClick(track) },
+                        onClick = { onTrackClick(track, filteredTracks, index) },
                         trailingContent = {
                             val isSaved = savedTrackIds.contains(track.trackId)
                             Row(verticalAlignment = Alignment.CenterVertically) {

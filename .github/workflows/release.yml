@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag de la release (ej. v1.0.1). Deja vacío para auto-generar según versión'
+        description: 'Tag de la release (ej. v1.0.8). Deja vacío para auto-generar según versión'
         required: false
         default: ''
   schedule:
@@ -54,10 +54,15 @@ jobs:
         id: release_info
         run: |
           if [ -n "${{ github.event.inputs.tag_name }}" ]; then
-            TAG="${{ github.event.inputs.tag_name }}"
+            INPUT_TAG="${{ github.event.inputs.tag_name }}"
+            if [[ "$INPUT_TAG" =~ ^v ]]; then
+              TAG="$INPUT_TAG"
+            else
+              TAG="v$INPUT_TAG"
+            fi
           else
-            VERSION=$(grep 'versionName = ' app/build.gradle.kts | head -n 1 | sed 's/.*versionName = "\(.*\)".*/\1/')
-            TAG="v${VERSION}.${{ github.run_number }}"
+            VERSION=$(grep 'versionName = ' app/build.gradle.kts | head -n 1 | sed 's/.*versionName = "\(.*\)".*/\1/' | tr -d ' ' | sed 's/^v//')
+            TAG="v${VERSION}"
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 

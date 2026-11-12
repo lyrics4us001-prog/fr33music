@@ -225,6 +225,23 @@ class SearchViewModel @Inject constructor(
     fun onTrackClick(track: Track) {
         viewModelScope.launch {
             try {
+                // 1. Si hay un canal seleccionado con vídeos cargados
+                val channelList = _channelVideos.value
+                val channelIdx = channelList.indexOfFirst { it.trackId == track.trackId }
+                if (channelIdx >= 0) {
+                    playerRepository.setQueue(channelList, channelIdx)
+                    return@launch
+                }
+
+                // 2. Si hay un álbum o playlist seleccionada con pistas cargadas
+                val albumList = _albumTracks.value
+                val albumIdx = albumList.indexOfFirst { it.trackId == track.trackId }
+                if (albumIdx >= 0) {
+                    playerRepository.setQueue(albumList, albumIdx)
+                    return@launch
+                }
+
+                // 3. Resultados de búsqueda principal (vídeos o canciones)
                 val currentState = _uiState.value
                 when (currentState) {
                     is SearchUiState.LookingSuccess -> {
@@ -255,13 +272,15 @@ class SearchViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 if (shuffle) {
-                    val shuffled = tracks.shuffled()
-                    playerRepository.setQueue(shuffled, 0)
+                    playerRepository.setQueue(tracks, 0)
                     if (!playerRepository.playbackState.value.isShuffle) {
                         playerRepository.toggleShuffle()
                     }
                 } else {
                     val index = startIndex.coerceIn(0, tracks.lastIndex)
+                    if (playerRepository.playbackState.value.isShuffle) {
+                        playerRepository.toggleShuffle()
+                    }
                     playerRepository.setQueue(tracks, index)
                 }
             } catch (e: Exception) {
