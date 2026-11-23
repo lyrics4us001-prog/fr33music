@@ -1,5 +1,6 @@
 package com.fr33music.feature.home
 
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -46,8 +47,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.io.File
 import com.fr33music.core.designsystem.component.LoadingSkeleton
 import com.fr33music.core.designsystem.component.TrackRow
 import com.fr33music.core.designsystem.theme.ColorBackground
@@ -309,6 +312,50 @@ fun HomeScreen(
                         border = BorderStroke(1.dp, ColorError.copy(alpha = 0.6f))
                     ) {
                         Text(text = "Liberar espacio (Borrar audios descargados)", color = ColorError)
+                    }
+
+                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
+
+                    OutlinedButton(
+                        onClick = {
+                            val crashFile = File(context.filesDir, "last_crash.txt")
+                            if (crashFile.exists() && crashFile.length() > 0) {
+                                try {
+                                    val crashContent = crashFile.readText()
+                                    val uri = try {
+                                        FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            crashFile
+                                        )
+                                    } catch (_: Exception) {
+                                        null
+                                    }
+
+                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, "Fr33Music - Registro de error")
+                                        putExtra(Intent.EXTRA_TEXT, crashContent)
+                                        if (uri != null) {
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                    }
+                                    val chooser = Intent.createChooser(sendIntent, "Compartir último registro de errores").apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(chooser)
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Error al compartir log: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                Toast.makeText(context, "No hay errores registrados", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(Fr33Radius.medium)
+                    ) {
+                        Text(text = "Compartir último registro de errores", color = ColorTextPrimary)
                     }
 
                     if (uiState.cacheClearedMessage != null) {
