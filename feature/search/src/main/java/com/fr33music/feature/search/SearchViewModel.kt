@@ -19,6 +19,8 @@ import com.fr33music.core.player.PlayerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -65,23 +67,206 @@ class SearchViewModel @Inject constructor(
     private val _isLoadingChannel = MutableStateFlow(false)
     val isLoadingChannel: StateFlow<Boolean> = _isLoadingChannel.asStateFlow()
 
+    private val _isLoadingMoreChannel = MutableStateFlow(false)
+    val isLoadingMoreChannel: StateFlow<Boolean> = _isLoadingMoreChannel.asStateFlow()
+
+    private val _isSearchingInChannel = MutableStateFlow(false)
+    val isSearchingInChannel: StateFlow<Boolean> = _isSearchingInChannel.asStateFlow()
+
+    private val _channelSearchQuery = MutableStateFlow("")
+    val channelSearchQuery: StateFlow<String> = _channelSearchQuery.asStateFlow()
+
+    private val _channelHasMore = MutableStateFlow(false)
+    val channelHasMore: StateFlow<Boolean> = _channelHasMore.asStateFlow()
+
+    private val _channelError = MutableStateFlow<String?>(null)
+    val channelError: StateFlow<String?> = _channelError.asStateFlow()
+
+    private val _channelTotalVideos = MutableStateFlow<Long?>(null)
+    val channelTotalVideos: StateFlow<Long?> = _channelTotalVideos.asStateFlow()
+
+    private val _channelUploads = MutableStateFlow<List<Track>>(emptyList())
+    private var channelUploadsNextPageToken: String? = null
+    private val _channelSearchResults = MutableStateFlow<List<Track>>(emptyList())
+    private var channelSearchNextPageToken: String? = null
+    private var channelSearchJob: Job? = null
+
     fun selectChannel(channel: ChannelCard?) {
         _selectedChannel.value = channel
+        channelSearchJob?.cancel()
+        _channelSearchQuery.value = ""
+        _channelError.value = null
+        _channelTotalVideos.value = null
         if (channel != null) {
+            _channelUploads.value = emptyList()
+            channelUploadsNextPageToken = null
+            _channelSearchResults.value = emptyList()
+            channelSearchNextPageToken = null
+            _channelVideos.value = emptyList()
+            _isLoadingChannel.value = true
+            _isLoadingMoreChannel.value = false
+            _isSearchingInChannel.value = false
+            _channelHasMore.value = false
+
             viewModelScope.launch {
                 try {
-                    _isLoadingChannel.value = true
-                    val result = searchSource.getChannelVideos(channel)
-                    _channelVideos.value = result.getOrElse { emptyList() }
+                    val result = searchSource.getChannelVideosPaged(channel, null)
+                    if (result.isSuccess) {
+                        val res = result.getOrThrow()
+                        _channelUploads.value = res.tracks
+                        channelUploadsNextPageToken = res.nextPageToken
+                        _channelTotalVideos.value = res.totalVideos ?: res.tracks.size.toLong()
+                        _channelVideos.value = res.tracks
+                        _channelHasMore.value = res.nextPageToken != null
+                        _channelError.value = null
+                    } else {
+                        _channelUploads.value = emptyList()
+                        _channelVideos.value = emptyList()
+                        _channelTotalVideos.value = null
+                        _channelHasMore.value = false
+                        _channelError.value = "Error al cargar los vídeos del canal"
+                    }
                 } catch (e: Exception) {
+                    Log.e("SearchViewModel", "Error al cargar canal ${channel.name}: ${e.message}", e)
                     _channelVideos.value = emptyList()
+                    _channelTotalVideos.value = null
+                    _channelError.value = "Error al cargar los vídeos del canal"
                 } finally {
                     _isLoadingChannel.value = false
                 }
             }
         } else {
             _channelVideos.value = emptyList()
+            _channelUploads.value = emptyList()
+            channelUploadsNextPageToken = null
+            _channelSearchResults.value = emptyList()
+            channelSearchNextPageToken = null
+            _channelTotalVideos.value = null
             _isLoadingChannel.value = false
+            _isLoadingMoreChannel.value = false
+            _isSearchingInChannel.value = false
+            _channelHasMore.value = false
+        }
+    }
+
+    fun loadMoreChannelVideos() {
+        if (_isLoadingChannel.value || _isLoadingMoreChannel.value || _isSearchingInChannel.value) return
+        val currentChannel = _selectedChannel.value ?: return
+
+        // 1. Modo búsqueda interna
+        if (_channelSearchQuery.value.isNotBlank()) {
+            val token = channelSearchNextPageToken ?: return
+            _isLoadingMoreChannel.value = true
+            _channelError.value = null
+            viewModelScope.launch {
+                try {
+                    val result = searchSource.searchChannelVideos(currentChannel, _channelSearchQuery.value, token)
+                    if (result.isSuccess) {
+                        val res = result.getOrThrow()
+                        val existingIds = _channelSearchResults.value.map { it.trackId }.toSet()
+                        val newTracks = res.tracks.filter { it.trackId !in existingIds }
+                        _channelSearchResults.value = _channelSearchResults.value + newTracks
+                        channelSearchNextPageToken = res.nextPageToken
+                        _channelVideos.value = _channelSearchResults.value
+                        _channelHasMore.value = res.nextPageToken != null
+                    } else {
+                        _channelError.value = "Error al cargar más resultados"
+                    }
+                } catch (e: Exception) {
+                    Log.e("SearchViewModel", "Error en paginación de búsqueda de canal: ${e.message}", e)
+                    _channelError.value = "Error al cargar más resultados"
+                } finally {
+                    _isLoadingMoreChannel.value = false
+                }
+            }
+            return
+        }
+
+        // 2. Modo vídeos subidos (uploadsPlaylist)
+        val token = channelUploadsNextPageToken ?: return
+        _isLoadingMoreChannel.value = true
+        _channelError.value = null
+        viewModelScope.launch {
+            try {
+                val result = searchSource.getChannelVideosPaged(currentChannel, token)
+                if (result.isSuccess) {
+                    val res = result.getOrThrow()
+                    val existingIds = _channelUploads.value.map { it.trackId }.toSet()
+                    val newTracks = res.tracks.filter { it.trackId !in existingIds }
+                    _channelUploads.value = _channelUploads.value + newTracks
+                    channelUploadsNextPageToken = res.nextPageToken
+                    _channelVideos.value = _channelUploads.value
+                    _channelHasMore.value = res.nextPageToken != null
+                } else {
+                    _channelError.value = "Error al cargar más vídeos"
+                }
+            } catch (e: Exception) {
+                Log.e("SearchViewModel", "Error en paginación de subidas de canal: ${e.message}", e)
+                _channelError.value = "Error al cargar más vídeos"
+            } finally {
+                _isLoadingMoreChannel.value = false
+            }
+        }
+    }
+
+    fun retryLoadMoreChannelVideos() {
+        _channelError.value = null
+        loadMoreChannelVideos()
+    }
+
+    fun searchInChannel(query: String) {
+        _channelSearchQuery.value = query
+        _channelError.value = null
+        channelSearchJob?.cancel()
+
+        if (query.isBlank()) {
+            // Restaurar instantáneamente la lista de subidas que ya se tenía cargada
+            _channelSearchResults.value = emptyList()
+            channelSearchNextPageToken = null
+            _isSearchingInChannel.value = false
+            _channelVideos.value = _channelUploads.value
+            _channelHasMore.value = channelUploadsNextPageToken != null
+            return
+        }
+
+        val currentChannel = _selectedChannel.value ?: return
+        channelSearchJob = viewModelScope.launch {
+            delay(350)
+            if (!isActive) return@launch
+
+            _isSearchingInChannel.value = true
+            _channelVideos.value = emptyList() // Limpiar lista al iniciar búsqueda
+            try {
+                val result = searchSource.searchChannelVideos(currentChannel, query, null)
+                if (isActive) {
+                    if (result.isSuccess) {
+                        val res = result.getOrThrow()
+                        _channelSearchResults.value = res.tracks
+                        channelSearchNextPageToken = res.nextPageToken
+                        _channelVideos.value = res.tracks
+                        _channelHasMore.value = res.nextPageToken != null
+                    } else {
+                        _channelSearchResults.value = emptyList()
+                        channelSearchNextPageToken = null
+                        _channelVideos.value = emptyList()
+                        _channelHasMore.value = false
+                        _channelError.value = "No se encontraron vídeos que coincidan"
+                    }
+                }
+            } catch (e: Exception) {
+                if (isActive) {
+                    Log.e("SearchViewModel", "Error al buscar en canal ${currentChannel.name}: ${e.message}", e)
+                    _channelSearchResults.value = emptyList()
+                    channelSearchNextPageToken = null
+                    _channelVideos.value = emptyList()
+                    _channelHasMore.value = false
+                    _channelError.value = "Error al realizar la búsqueda"
+                }
+            } finally {
+                if (isActive) {
+                    _isSearchingInChannel.value = false
+                }
+            }
         }
     }
 

@@ -193,6 +193,14 @@ fun LibraryScreen(
         viewModel.selectPlaylist(null)
     }
 
+    var isRootSearchVisible by remember { mutableStateOf(false) }
+    var rootSearchQuery by remember { mutableStateOf("") }
+
+    BackHandler(enabled = isRootSearchVisible && uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
+        isRootSearchVisible = false
+        rootSearchQuery = ""
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -213,6 +221,19 @@ fun LibraryScreen(
 
             if (uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = {
+                        isRootSearchVisible = !isRootSearchVisible
+                        if (!isRootSearchVisible) {
+                            rootSearchQuery = ""
+                        }
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "Buscar en biblioteca",
+                            tint = if (isRootSearchVisible) ColorPrimary else ColorTextPrimary
+                        )
+                    }
+
                     var showExportImportMenu by remember { mutableStateOf(false) }
 
                     Box {
@@ -269,7 +290,63 @@ fun LibraryScreen(
             }
         }
 
-        // Chips de las 4 pestañas: Artistas, Álbumes, Playlists, Todas las canciones
+        if (isRootSearchVisible && uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
+            val placeholderText = when (uiState.selectedTab) {
+                LibraryTab.ARTISTS -> "Buscar artistas..."
+                LibraryTab.PLAYLISTS -> "Buscar playlists..."
+                LibraryTab.ALL_SONGS -> "Buscar canciones..."
+            }
+
+            OutlinedTextField(
+                value = rootSearchQuery,
+                onValueChange = { rootSearchQuery = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.small),
+                placeholder = {
+                    Text(
+                        text = placeholderText,
+                        style = Fr33Typography.bodyMedium,
+                        color = ColorTextTertiary
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Buscar",
+                        tint = ColorTextSecondary
+                    )
+                },
+                trailingIcon = {
+                    IconButton(onClick = {
+                        if (rootSearchQuery.isNotEmpty()) {
+                            rootSearchQuery = ""
+                        } else {
+                            isRootSearchVisible = false
+                        }
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Cerrar búsqueda",
+                            tint = ColorTextSecondary
+                        )
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(Fr33Radius.large),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = ColorSurface,
+                    unfocusedContainerColor = ColorSurface,
+                    focusedTextColor = ColorTextPrimary,
+                    unfocusedTextColor = ColorTextPrimary,
+                    focusedBorderColor = ColorPrimary,
+                    unfocusedBorderColor = ColorDivider,
+                    cursorColor = ColorPrimary
+                )
+            )
+        }
+
+        // Chips de las pestañas: Artistas, Playlists, Todas las canciones
         LazyRow(
             modifier = Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(horizontal = Fr33Spacing.large),
@@ -371,15 +448,31 @@ fun LibraryScreen(
                             onRename = { track -> trackToRename = track }
                         )
                     } else {
+                        val filteredArtists = remember(uiState.artists, rootSearchQuery) {
+                            if (rootSearchQuery.isBlank()) uiState.artists
+                            else uiState.artists.filter { it.name.contains(rootSearchQuery, ignoreCase = true) }
+                        }
+
                         if (uiState.artists.isEmpty()) {
                             LibraryEmptyView(
                                 icon = Icons.Default.Person,
                                 title = "Sin artistas",
                                 subtitle = "Guarda o descarga canciones para ver a tus artistas organizados aquí."
                             )
+                        } else if (filteredArtists.isEmpty()) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "No se encontraron artistas para \"$rootSearchQuery\"",
+                                    style = Fr33Typography.bodyMedium,
+                                    color = ColorTextSecondary
+                                )
+                            }
                         } else {
                             LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                items(uiState.artists, key = { it.name }) { artistItem ->
+                                items(filteredArtists, key = { it.name }) { artistItem ->
                                     ArtistRow(
                                         artist = artistItem,
                                         onClick = { viewModel.selectArtist(artistItem.name) },
@@ -436,6 +529,11 @@ fun LibraryScreen(
                             onRename = { track -> trackToRename = track }
                         )
                     } else {
+                        val filteredPlaylists = remember(uiState.playlists, rootSearchQuery) {
+                            if (rootSearchQuery.isBlank()) uiState.playlists
+                            else uiState.playlists.filter { it.name.contains(rootSearchQuery, ignoreCase = true) }
+                        }
+
                         Column(modifier = Modifier.fillMaxSize()) {
                             Row(
                                 modifier = Modifier
@@ -445,7 +543,7 @@ fun LibraryScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Mis Playlists (${uiState.playlists.size})",
+                                    text = "Mis Playlists (${filteredPlaylists.size})",
                                     style = Fr33Typography.titleMedium,
                                     color = ColorTextSecondary
                                 )
@@ -470,9 +568,20 @@ fun LibraryScreen(
                                     title = "Sin playlists",
                                     subtitle = "Toca el botón 'Nueva' para crear tu primera lista de reproducción."
                                 )
+                            } else if (filteredPlaylists.isEmpty()) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "No se encontraron playlists para \"$rootSearchQuery\"",
+                                        style = Fr33Typography.bodyMedium,
+                                        color = ColorTextSecondary
+                                    )
+                                }
                             } else {
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                    items(uiState.playlists, key = { it.id }) { playlist ->
+                                    items(filteredPlaylists, key = { it.id }) { playlist ->
                                         PlaylistRow(
                                             playlist = playlist,
                                             onClick = { viewModel.selectPlaylist(playlist.id, playlist.name) },
@@ -503,60 +612,15 @@ fun LibraryScreen(
                             subtitle = "Guarda canciones con el corazón o descárgalas para verlas todas aquí."
                         )
                     } else {
-                        var songSearchQuery by remember { mutableStateOf("") }
-                        val filteredEntities = remember(uiState.allSongs, songSearchQuery) {
-                            if (songSearchQuery.isBlank()) uiState.allSongs
+                        val filteredEntities = remember(uiState.allSongs, rootSearchQuery) {
+                            if (rootSearchQuery.isBlank()) uiState.allSongs
                             else uiState.allSongs.filter {
-                                it.title.contains(songSearchQuery, ignoreCase = true) ||
-                                it.artistName.contains(songSearchQuery, ignoreCase = true)
+                                it.title.contains(rootSearchQuery, ignoreCase = true) ||
+                                it.artistName.contains(rootSearchQuery, ignoreCase = true)
                             }
                         }
                         val allTracksDomain = remember(filteredEntities) { filteredEntities.map { it.toDomain() } }
                         Column(modifier = Modifier.fillMaxSize()) {
-                            OutlinedTextField(
-                                value = songSearchQuery,
-                                onValueChange = { songSearchQuery = it },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.small),
-                                placeholder = {
-                                    Text(
-                                        text = "Buscar canciones...",
-                                        style = Fr33Typography.bodyMedium,
-                                        color = ColorTextTertiary
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Search,
-                                        contentDescription = "Buscar",
-                                        tint = ColorTextSecondary
-                                    )
-                                },
-                                trailingIcon = {
-                                    if (songSearchQuery.isNotEmpty()) {
-                                        IconButton(onClick = { songSearchQuery = "" }) {
-                                            Icon(
-                                                imageVector = Icons.Default.Clear,
-                                                contentDescription = "Limpiar",
-                                                tint = ColorTextSecondary
-                                            )
-                                        }
-                                    }
-                                },
-                                singleLine = true,
-                                shape = RoundedCornerShape(Fr33Radius.large),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedContainerColor = ColorSurface,
-                                    unfocusedContainerColor = ColorSurface,
-                                    focusedTextColor = ColorTextPrimary,
-                                    unfocusedTextColor = ColorTextPrimary,
-                                    focusedBorderColor = ColorPrimary,
-                                    unfocusedBorderColor = ColorDivider,
-                                    cursorColor = ColorPrimary
-                                )
-                            )
-
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -638,8 +702,20 @@ fun LibraryScreen(
                                 }
                             }
 
-                            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                items(filteredEntities, key = { it.id }) { trackEntity ->
+                            if (filteredEntities.isEmpty()) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "No se encontraron canciones para \"$rootSearchQuery\"",
+                                        style = Fr33Typography.bodyMedium,
+                                        color = ColorTextSecondary
+                                    )
+                                }
+                            } else {
+                                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    items(filteredEntities, key = { it.id }) { trackEntity ->
                                     val domain = trackEntity.toDomain()
                                     TrackRow(
                                         track = domain,
@@ -677,6 +753,7 @@ fun LibraryScreen(
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -1321,6 +1398,7 @@ private fun PlaylistDetailView(
     onRename: (Track) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var isSearchVisible by remember { mutableStateOf(false) }
     var showTopMenu by remember { mutableStateOf(false) }
     var showSortDialog by remember { mutableStateOf(false) }
 
@@ -1334,6 +1412,11 @@ private fun PlaylistDetailView(
     val domainTracks = remember(filteredTracks) { filteredTracks.map { it.toDomain() } }
     val allDomainTracks = remember(tracks) { tracks.map { it.toDomain() } }
     val listState = rememberLazyListState()
+
+    BackHandler(enabled = isSearchVisible) {
+        isSearchVisible = false
+        searchQuery = ""
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -1358,6 +1441,20 @@ private fun PlaylistDetailView(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+
+            // Icono de búsqueda (Lupa) colocado justo a la izquierda de los 3 puntitos
+            IconButton(onClick = {
+                isSearchVisible = !isSearchVisible
+                if (!isSearchVisible) {
+                    searchQuery = ""
+                }
+            }) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Buscar canciones",
+                    tint = if (isSearchVisible) ColorPrimary else ColorTextPrimary
+                )
+            }
 
             // Menú de 3 puntos en barra superior
             Box {
@@ -1484,7 +1581,7 @@ private fun PlaylistDetailView(
             )
         }
 
-        if (tracks.isNotEmpty()) {
+        if (isSearchVisible) {
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
@@ -1506,14 +1603,18 @@ private fun PlaylistDetailView(
                     )
                 },
                 trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }) {
-                            Icon(
-                                imageVector = Icons.Default.Clear,
-                                contentDescription = "Limpiar",
-                                tint = ColorTextSecondary
-                            )
+                    IconButton(onClick = {
+                        if (searchQuery.isNotEmpty()) {
+                            searchQuery = ""
+                        } else {
+                            isSearchVisible = false
                         }
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Cerrar búsqueda",
+                            tint = ColorTextSecondary
+                        )
                     }
                 },
                 singleLine = true,
@@ -1788,6 +1889,23 @@ private fun ArtistDetailView(
     val listState = rememberLazyListState()
     var showTopMenu by remember { mutableStateOf(false) }
     var showSortDialog by remember { mutableStateOf(false) }
+    var isSearchVisible by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filteredTracks = remember(tracks, searchQuery) {
+        if (searchQuery.isBlank()) tracks
+        else tracks.filter {
+            it.title.contains(searchQuery, ignoreCase = true) ||
+            it.artistName.contains(searchQuery, ignoreCase = true) ||
+            (it.albumName?.contains(searchQuery, ignoreCase = true) == true)
+        }
+    }
+    val filteredDomainTracks = remember(filteredTracks) { filteredTracks.map { it.toDomain() } }
+
+    BackHandler(enabled = isSearchVisible) {
+        isSearchVisible = false
+        searchQuery = ""
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -1821,6 +1939,20 @@ private fun ArtistDetailView(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+
+            // Icono de búsqueda (Lupa) colocado justo a la izquierda de los 3 puntitos
+            IconButton(onClick = {
+                isSearchVisible = !isSearchVisible
+                if (!isSearchVisible) {
+                    searchQuery = ""
+                }
+            }) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Buscar canciones",
+                    tint = if (isSearchVisible) ColorPrimary else ColorTextPrimary
+                )
+            }
 
             // Menú de 3 puntos en barra superior
             Box {
@@ -1921,6 +2053,52 @@ private fun ArtistDetailView(
             }
         }
 
+        if (isSearchVisible) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.small),
+                placeholder = {
+                    Text(
+                        text = "Buscar en este artista...",
+                        style = Fr33Typography.bodyMedium,
+                        color = ColorTextTertiary
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Buscar",
+                        tint = ColorTextSecondary
+                    )
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(
+                                imageVector = Icons.Default.Clear,
+                                contentDescription = "Limpiar",
+                                tint = ColorTextSecondary
+                            )
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(Fr33Radius.large),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = ColorSurface,
+                    unfocusedContainerColor = ColorSurface,
+                    focusedTextColor = ColorTextPrimary,
+                    unfocusedTextColor = ColorTextPrimary,
+                    focusedBorderColor = ColorPrimary,
+                    unfocusedBorderColor = ColorDivider,
+                    cursorColor = ColorPrimary
+                )
+            )
+        }
+
         if (showSortDialog) {
             SortOrderDialog(
                 currentOrder = sortOrder,
@@ -1936,38 +2114,56 @@ private fun ArtistDetailView(
             state = listState,
             modifier = Modifier.fillMaxSize()
         ) {
-            items(tracks, key = { it.id }) { trackEntity ->
-                val domain = trackEntity.toDomain()
-                TrackRow(
-                    track = domain,
-                    onClick = { onPlayTrack(domain, domainTracks) },
-                    onLongClick = { onRename(domain) },
-                    trailingContent = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { onToggleSave(domain, trackEntity.isSaved) }) {
-                                Icon(
-                                    imageVector = if (trackEntity.isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                    contentDescription = if (trackEntity.isSaved) "Quitar de favoritos" else "Guardar en favoritos",
-                                    tint = if (trackEntity.isSaved) ColorPrimary else ColorTextTertiary
+            if (filteredTracks.isEmpty() && searchQuery.isNotBlank()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(Fr33Spacing.extraLarge),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No se encontraron canciones que coincidan con \"$searchQuery\"",
+                            style = Fr33Typography.bodyMedium,
+                            color = ColorTextTertiary,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            } else {
+                items(filteredTracks, key = { it.id }) { trackEntity ->
+                    val domain = trackEntity.toDomain()
+                    TrackRow(
+                        track = domain,
+                        onClick = { onPlayTrack(domain, filteredDomainTracks) },
+                        onLongClick = { onRename(domain) },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { onToggleSave(domain, trackEntity.isSaved) }) {
+                                    Icon(
+                                        imageVector = if (trackEntity.isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                        contentDescription = if (trackEntity.isSaved) "Quitar de favoritos" else "Guardar en favoritos",
+                                        tint = if (trackEntity.isSaved) ColorPrimary else ColorTextTertiary
+                                    )
+                                }
+                                TrackKebabMenu(
+                                    onRename = { onRename(domain) },
+                                    onDelete = { onDeleteDownload(trackEntity.id) },
+                                    onAddToPlaylist = { onAddToPlaylist(domain) }
                                 )
                             }
-                            TrackKebabMenu(
-                                onRename = { onRename(domain) },
-                                onDelete = { onDeleteDownload(trackEntity.id) },
-                                onAddToPlaylist = { onAddToPlaylist(domain) }
-                            )
                         }
-                    }
-                )
-                HorizontalDivider(
-                    color = ColorDivider,
-                    thickness = 0.5.dp,
-                    modifier = Modifier.padding(start = 72.dp)
-                )
-            }
+                    )
+                    HorizontalDivider(
+                        color = ColorDivider,
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(start = 72.dp)
+                    )
+                }
 
-            item {
-                ListSummaryFooter(tracks = tracks)
+                item {
+                    ListSummaryFooter(tracks = filteredTracks)
+                }
             }
         }
     }

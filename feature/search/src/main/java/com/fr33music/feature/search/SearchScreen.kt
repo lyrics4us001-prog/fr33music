@@ -59,6 +59,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -114,6 +116,12 @@ fun SearchScreen(
     val selectedChannel by viewModel.selectedChannel.collectAsStateWithLifecycle()
     val channelVideos by viewModel.channelVideos.collectAsStateWithLifecycle()
     val isLoadingChannel by viewModel.isLoadingChannel.collectAsStateWithLifecycle()
+    val isLoadingMoreChannel by viewModel.isLoadingMoreChannel.collectAsStateWithLifecycle()
+    val isSearchingInChannel by viewModel.isSearchingInChannel.collectAsStateWithLifecycle()
+    val channelSearchQuery by viewModel.channelSearchQuery.collectAsStateWithLifecycle()
+    val channelHasMore by viewModel.channelHasMore.collectAsStateWithLifecycle()
+    val channelError by viewModel.channelError.collectAsStateWithLifecycle()
+    val channelTotalVideos by viewModel.channelTotalVideos.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
     val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
@@ -154,9 +162,18 @@ fun SearchScreen(
         SearchChannelDetailView(
             channel = currentChannel,
             videos = channelVideos,
+            totalVideos = channelTotalVideos,
             isLoading = isLoadingChannel,
+            isLoadingMore = isLoadingMoreChannel,
+            isSearching = isSearchingInChannel,
+            searchQuery = channelSearchQuery,
+            hasMore = channelHasMore,
+            channelError = channelError,
             savedTrackIds = savedTrackIds,
             onBack = { viewModel.selectChannel(null) },
+            onSearchQueryChange = viewModel::searchInChannel,
+            onLoadMore = viewModel::loadMoreChannelVideos,
+            onRetryLoadMore = viewModel::retryLoadMoreChannelVideos,
             onTrackClick = { track, list, index ->
                 viewModel.playAll(list, index)
                 onTrackSelected(track)
@@ -690,21 +707,40 @@ private fun formatSubscriberCount(count: Long): String {
 private fun SearchChannelDetailView(
     channel: ChannelCard,
     videos: List<Track>,
+    totalVideos: Long? = null,
     isLoading: Boolean,
+    isLoadingMore: Boolean,
+    isSearching: Boolean,
+    searchQuery: String,
+    hasMore: Boolean,
+    channelError: String?,
     savedTrackIds: Set<String>,
     onBack: () -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onLoadMore: () -> Unit,
+    onRetryLoadMore: () -> Unit,
     onTrackClick: (Track, List<Track>, Int) -> Unit,
     onPlayAll: (List<Track>, Boolean) -> Unit = { _, _ -> },
     onToggleSave: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
     onBulkAddToPlaylist: (List<Track>) -> Unit = {}
 ) {
-    var searchQuery by remember { mutableStateOf("") }
-    val filteredVideos = remember(videos, searchQuery) {
-        if (searchQuery.isBlank()) videos
-        else videos.filter {
-            it.title.contains(searchQuery, ignoreCase = true) ||
-            it.artistName.contains(searchQuery, ignoreCase = true)
+    val listState = rememberLazyListState()
+
+    // Scroll infinito: solicitar más cuando el usuario esté a 3 elementos del final
+    val shouldLoadMore = remember(videos.size, isLoading, isLoadingMore, isSearching, hasMore) {
+        derivedStateOf {
+            if (isLoading || isLoadingMore || isSearching || !hasMore || videos.isEmpty()) {
+                return@derivedStateOf false
+            }
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf false
+            lastVisible.index >= listState.layoutInfo.totalItemsCount - 3
+        }
+    }
+
+    LaunchedEffect(shouldLoadMore.value) {
+        if (shouldLoadMore.value) {
+            onLoadMore()
         }
     }
 
@@ -749,7 +785,7 @@ private fun SearchChannelDetailView(
 
         OutlinedTextField(
             value = searchQuery,
-            onValueChange = { searchQuery = it },
+            onValueChange = onSearchQueryChange,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.small),
@@ -769,7 +805,7 @@ private fun SearchChannelDetailView(
             },
             trailingIcon = {
                 if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { searchQuery = "" }) {
+                    IconButton(onClick = { onSearchQueryChange("") }) {
                         Icon(
                             imageVector = Icons.Default.Clear,
                             contentDescription = "Limpiar",
@@ -792,6 +828,7 @@ private fun SearchChannelDetailView(
         )
 
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = Fr33Spacing.extraLarge)
         ) {
@@ -852,8 +889,15 @@ private fun SearchChannelDetailView(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val headerTitle = if (searchQuery.isNotBlank()) {
+                            "Resultados de búsqueda (${videos.size})"
+                        } else {
+                            val count = totalVideos ?: videos.size.toLong()
+                            val countStr = java.text.NumberFormat.getIntegerInstance().format(count)
+                            "Vídeos subidos ($countStr)"
+                        }
                         Text(
-                            text = "Vídeos subidos (${filteredVideos.size})",
+                            text = headerTitle,
                             style = Fr33Typography.titleMedium,
                             color = ColorTextPrimary,
                             modifier = Modifier.weight(1f)
@@ -862,7 +906,7 @@ private fun SearchChannelDetailView(
                 }
             }
 
-            if (isLoading) {
+            if (isLoading || isSearching) {
                 item {
                     Box(
                         modifier = Modifier
@@ -881,24 +925,13 @@ private fun SearchChannelDetailView(
                             .padding(Fr33Spacing.extraLarge),
                         contentAlignment = Alignment.Center
                     ) {
+                        val emptyText = if (searchQuery.isNotBlank()) {
+                            "No se encontraron vídeos que coincidan con \"$searchQuery\" en este canal"
+                        } else {
+                            "No se encontraron vídeos disponibles en este canal"
+                        }
                         Text(
-                            text = "No se encontraron vídeos disponibles en este canal",
-                            style = Fr33Typography.bodyLarge,
-                            color = ColorTextTertiary,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-            } else if (filteredVideos.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(Fr33Spacing.extraLarge),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "No se encontraron vídeos que coincidan con la búsqueda",
+                            text = emptyText,
                             style = Fr33Typography.bodyMedium,
                             color = ColorTextTertiary,
                             textAlign = TextAlign.Center
@@ -907,12 +940,12 @@ private fun SearchChannelDetailView(
                 }
             } else {
                 itemsIndexed(
-                    items = filteredVideos,
+                    items = videos,
                     key = { index, track -> "${track.trackId}_$index" }
                 ) { index, track ->
                     TrackRow(
                         track = track,
-                        onClick = { onTrackClick(track, filteredVideos, index) },
+                        onClick = { onTrackClick(track, videos, index) },
                         trailingContent = {
                             val isSaved = savedTrackIds.contains(track.trackId)
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -938,6 +971,50 @@ private fun SearchChannelDetailView(
                         thickness = 0.5.dp,
                         modifier = Modifier.padding(start = 72.dp)
                     )
+                }
+
+                // Indicador de carga al final para más elementos (scroll infinito)
+                if (isLoadingMore) {
+                    item(key = "loading_more_channel_videos") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = Fr33Spacing.large),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(28.dp),
+                                strokeWidth = 2.5.dp,
+                                color = ColorPrimary
+                            )
+                        }
+                    }
+                }
+
+                // Botón de reintento si falló la paginación
+                if (channelError != null) {
+                    item(key = "error_channel_load_more") {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(Fr33Spacing.medium),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = channelError,
+                                style = Fr33Typography.bodySmall,
+                                color = ColorError,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(Fr33Spacing.small))
+                            OutlinedButton(
+                                onClick = onRetryLoadMore,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = ColorPrimary)
+                            ) {
+                                Text("Reintentar")
+                            }
+                        }
+                    }
                 }
             }
         }

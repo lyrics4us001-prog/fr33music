@@ -11,8 +11,10 @@ data class PlayerUiState(
     val isDownloaded: Boolean = false,
     val downloadStatus: String? = null,
     val lyrics: String? = null,
+    val syncedLyrics: String? = null,
     val isLoadingLyrics: Boolean = false,
     val showLyricsSheet: Boolean = false,
+    val lyricsOffsetMs: Long = 0L,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val error: String? = null

@@ -6,6 +6,7 @@ import com.fr33music.core.database.dao.AlbumDao
 import com.fr33music.core.database.dao.ArtistDao
 import com.fr33music.core.database.dao.DownloadDao
 import com.fr33music.core.database.dao.LyricsDao
+import com.fr33music.core.database.dao.LyricsOffsetDao
 import com.fr33music.core.database.dao.PlaylistDao
 import com.fr33music.core.database.dao.SearchHistoryDao
 import com.fr33music.core.database.dao.TrackDao
@@ -13,6 +14,7 @@ import com.fr33music.core.database.entity.AlbumEntity
 import com.fr33music.core.database.entity.ArtistEntity
 import com.fr33music.core.database.entity.DownloadEntity
 import com.fr33music.core.database.entity.LyricsEntity
+import com.fr33music.core.database.entity.LyricsOffsetEntity
 import com.fr33music.core.database.entity.PlaylistEntity
 import com.fr33music.core.database.entity.PlaylistSongCrossRef
 import com.fr33music.core.database.entity.SearchHistoryEntity
@@ -24,12 +26,13 @@ import com.fr33music.core.database.entity.TrackEntity
         ArtistEntity::class,
         AlbumEntity::class,
         LyricsEntity::class,
+        LyricsOffsetEntity::class,
         SearchHistoryEntity::class,
         DownloadEntity::class,
         PlaylistEntity::class,
         PlaylistSongCrossRef::class
     ],
-    version = 3,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -37,6 +40,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun artistDao(): ArtistDao
     abstract fun albumDao(): AlbumDao
     abstract fun lyricsDao(): LyricsDao
+    abstract fun lyricsOffsetDao(): LyricsOffsetDao
     abstract fun searchHistoryDao(): SearchHistoryDao
     abstract fun downloadDao(): DownloadDao
     abstract fun playlistDao(): PlaylistDao

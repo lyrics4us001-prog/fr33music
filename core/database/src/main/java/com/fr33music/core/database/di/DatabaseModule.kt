@@ -2,12 +2,15 @@ package com.fr33music.core.database.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.fr33music.core.database.AppDatabase
 import com.fr33music.core.database.OfflineAudioSourceImpl
 import com.fr33music.core.database.dao.AlbumDao
 import com.fr33music.core.database.dao.ArtistDao
 import com.fr33music.core.database.dao.DownloadDao
 import com.fr33music.core.database.dao.LyricsDao
+import com.fr33music.core.database.dao.LyricsOffsetDao
 import com.fr33music.core.database.dao.SearchHistoryDao
 import com.fr33music.core.database.dao.TrackDao
 import com.fr33music.core.database.download.DownloadManager
@@ -27,6 +30,25 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE lyrics ADD COLUMN syncedText TEXT")
+        }
+    }
+
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS lyrics_offsets (
+                    videoId TEXT NOT NULL PRIMARY KEY,
+                    offsetMs INTEGER NOT NULL
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -35,6 +57,7 @@ object DatabaseModule {
             AppDatabase::class.java,
             "fr33music.db"
         )
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
             .fallbackToDestructiveMigration()
             .build()
     }
@@ -54,6 +77,10 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideLyricsDao(database: AppDatabase): LyricsDao = database.lyricsDao()
+
+    @Provides
+    @Singleton
+    fun provideLyricsOffsetDao(database: AppDatabase): LyricsOffsetDao = database.lyricsOffsetDao()
 
     @Provides
     @Singleton

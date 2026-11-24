@@ -1,5 +1,6 @@
 package com.fr33music.core.extractor
 
+import android.util.Base64
 import android.util.Log
 import com.fr33music.core.domain.model.AlbumCard
 import com.fr33music.core.domain.model.ChannelCard
@@ -9,12 +10,19 @@ import com.fr33music.core.domain.model.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.Page
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.channel.ChannelInfoItem
 import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.ObjectInputStream
+import java.io.ObjectOutputStream
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class NewPipeSearchSource(
     private val downloader: NewPipeDownloader = NewPipeDownloader()
@@ -253,96 +261,324 @@ class NewPipeSearchSource(
         }
     }
 
-    override suspend fun getChannelVideos(channel: ChannelCard): Result<List<Track>> = withContext(Dispatchers.IO) {
-        val tracks = mutableListOf<Track>()
-        val seenTrackIds = mutableSetOf<String>()
-        if (channel.url.isBlank()) {
-            return@withContext Result.success(tracks)
+    private val pageTokenCache = ConcurrentHashMap<String, Page>()
+
+    private fun savePage(page: Page?): String? {
+        if (page == null) return null
+        val id = UUID.randomUUID().toString()
+        pageTokenCache[id] = page
+        if (pageTokenCache.size > 200) {
+            val toRemove = pageTokenCache.keys.take(50)
+            toRemove.forEach { pageTokenCache.remove(it) }
+        }
+        val base64 = try {
+            val baos = ByteArrayOutputStream()
+            ObjectOutputStream(baos).use { it.writeObject(page) }
+            Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+        } catch (_: Exception) { null }
+        return if (base64 != null) "$id|$base64" else id
+    }
+
+    private fun getPage(token: String): Page? {
+        val id = token.substringBefore("|")
+        val cached = pageTokenCache[id]
+        if (cached != null) return cached
+        if (token.contains("|")) {
+            val base64 = token.substringAfter("|")
+            try {
+                val bytes = Base64.decode(base64, Base64.NO_WRAP)
+                ByteArrayInputStream(bytes).use { bais ->
+                    ObjectInputStream(bais).use { ois ->
+                        val obj = ois.readObject() as? Page
+                        if (obj != null) {
+                            pageTokenCache[id] = obj
+                            return obj
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        return null
+    }
+
+    private fun mapStreamInfoItemToTrack(item: StreamInfoItem, channel: ChannelCard): Track? {
+        val url = item.url ?: return null
+        val id = extractVideoId(url)
+        if (id.isBlank()) return null
+        val rawThumb = try {
+            item.thumbnails?.maxByOrNull { it.height }?.url
+                ?: item.thumbnails?.firstOrNull()?.url
+        } catch (_: Exception) { null }
+        val thumb = Track.upgradeThumbnail(rawThumb)
+        val title = item.name?.takeIf { it.isNotBlank() && !it.startsWith("Pista ") } ?: "Desconocido"
+        val artist = item.uploaderName?.takeIf { it.isNotBlank() } ?: channel.name.takeIf { it.isNotBlank() } ?: "Artista Desconocido"
+        val duration = try { if (item.duration > 0) item.duration * 1000L else 0L } catch (_: Exception) { 0L }
+        return Track(
+            trackId = id,
+            title = title,
+            artistName = artist,
+            durationMs = duration,
+            thumbnailUrl = thumb,
+            albumName = channel.name,
+            artistThumbnailUrl = channel.avatarUrl
+        )
+    }
+
+    override suspend fun getChannelVideos(channel: ChannelCard): Result<List<Track>> {
+        return getChannelVideosPaged(channel, null).map { it.tracks }
+    }
+
+    override suspend fun getChannelVideosPaged(
+        channel: ChannelCard,
+        nextPageToken: String?
+    ): Result<ChannelVideosResult> = withContext(Dispatchers.IO) {
+        if (channel.url.isBlank() && channel.channelId.isBlank()) {
+            return@withContext Result.success(ChannelVideosResult(emptyList(), null))
         }
 
         try {
             val service = ServiceList.YouTube
-            val channelExtractor = service.getChannelExtractor(channel.url)
-            try {
-                channelExtractor.fetchPage()
-            } catch (e: Exception) {
-                Log.w(TAG, "Fallo al obtener página inicial del canal ${channel.name}: ${e.message}")
+            val tracks = mutableListOf<Track>()
+            val seenTrackIds = mutableSetOf<String>()
+
+            // 1. Resolver uploadsPlaylistId ("UU" + channelId sin prefijo "UC")
+            var resolvedChannelId = channel.channelId
+            if (!resolvedChannelId.startsWith("UC") && channel.url.contains("/channel/UC")) {
+                resolvedChannelId = channel.url.substringAfter("/channel/").substringBefore("/").substringBefore("?")
             }
 
-            val tabs = try { channelExtractor.tabs } catch (_: Exception) { emptyList() }
-            val videoTab = tabs.firstOrNull { tab ->
+            if (!resolvedChannelId.startsWith("UC") && channel.url.isNotBlank()) {
                 try {
-                    tab.contentFilters?.any { it.equals("videos", ignoreCase = true) } == true
-                } catch (_: Exception) { false }
-            } ?: tabs.firstOrNull()
-
-            if (videoTab != null) {
-                try {
-                    val tabExtractor = service.getChannelTabExtractor(videoTab)
-                    tabExtractor.fetchPage()
-
-                    var currentPage = try { tabExtractor.initialPage } catch (_: Exception) { null }
-                    var pageCount = 0
-                    val maxPages = 4 // ~120 videos
-
-                    while (currentPage != null && pageCount < maxPages) {
-                        val items = try { currentPage.items } catch (_: Exception) { null } ?: emptyList()
-                        for (item in items) {
-                            if (item is StreamInfoItem) {
-                                val url = item.url ?: continue
-                                val id = extractVideoId(url)
-                                if (id.isNotBlank() && seenTrackIds.add(id)) {
-                                    val rawThumb = try {
-                                        item.thumbnails?.maxByOrNull { it.height }?.url
-                                            ?: item.thumbnails?.firstOrNull()?.url
-                                    } catch (_: Exception) { null }
-                                    val thumb = Track.upgradeThumbnail(rawThumb)
-                                    val title = item.name?.takeIf { it.isNotBlank() && !it.startsWith("Pista ") } ?: "Desconocido"
-                                    val artist = item.uploaderName?.takeIf { it.isNotBlank() } ?: channel.name.takeIf { it.isNotBlank() } ?: "Artista Desconocido"
-                                    val duration = try { if (item.duration > 0) item.duration * 1000L else 0L } catch (_: Exception) { 0L }
-                                    tracks.add(
-                                        Track(
-                                            trackId = id,
-                                            title = title,
-                                            artistName = artist,
-                                            durationMs = duration,
-                                            thumbnailUrl = thumb,
-                                            albumName = channel.name,
-                                            artistThumbnailUrl = channel.avatarUrl
-                                        )
-                                    )
-                                }
-                            }
-                        }
-
-                        if (currentPage.hasNextPage() && currentPage.nextPage != null) {
-                            try {
-                                currentPage = tabExtractor.getPage(currentPage.nextPage)
-                                pageCount++
-                            } catch (_: Exception) {
-                                break
-                            }
-                        } else break
+                    val chExtractor = service.getChannelExtractor(channel.url)
+                    chExtractor.fetchPage()
+                    val id = chExtractor.id
+                    if (!id.isNullOrBlank() && id.startsWith("UC")) {
+                        resolvedChannelId = id
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Error extrayendo pestaña de videos del canal ${channel.name}: ${e.message}")
+                    Log.w(TAG, "No se pudo extraer id de canal para ${channel.name}: ${e.message}")
                 }
             }
 
-            // Fallback si no vinieron videos de las pestañas
-            if (tracks.isEmpty()) {
-                val searchRes = search(channel.name)
-                val fallbackTracks = searchRes.getOrElse { emptyList() }.filter {
-                    it.artistName.equals(channel.name, ignoreCase = true)
+            val uploadsPlaylistId = if (resolvedChannelId.startsWith("UC")) {
+                "UU" + resolvedChannelId.removePrefix("UC")
+            } else null
+
+            // Si tenemos nextPageToken, resolver la página siguiente
+            if (!nextPageToken.isNullOrBlank()) {
+                val page = getPage(nextPageToken)
+                if (page != null) {
+                    // Paginación vía playlist de subidas
+                    if (uploadsPlaylistId != null) {
+                        try {
+                            val playlistUrl = "https://www.youtube.com/playlist?list=$uploadsPlaylistId"
+                            val playlistExtractor = service.getPlaylistExtractor(playlistUrl)
+                            val resultPage = playlistExtractor.getPage(page)
+                            val items = resultPage?.items ?: emptyList()
+                            for (item in items) {
+                                if (item is StreamInfoItem) {
+                                    val track = mapStreamInfoItemToTrack(item, channel)
+                                    if (track != null && seenTrackIds.add(track.trackId)) {
+                                        tracks.add(track)
+                                    }
+                                }
+                            }
+                            val nextToken = if (resultPage?.hasNextPage() == true && resultPage.nextPage != null) {
+                                savePage(resultPage.nextPage)
+                            } else null
+                            return@withContext Result.success(ChannelVideosResult(tracks, nextToken))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Fallo al paginar por playlist de subidas: ${e.message}")
+                        }
+                    }
+
+                    // Fallback para paginación vía tabExtractor si falla playlist
+                    try {
+                        val chExtractor = service.getChannelExtractor(channel.url)
+                        chExtractor.fetchPage()
+                        val videoTab = chExtractor.tabs.firstOrNull { tab ->
+                            try {
+                                tab.contentFilters?.any { it.equals("videos", ignoreCase = true) } == true
+                            } catch (_: Exception) { false }
+                        } ?: chExtractor.tabs.firstOrNull()
+
+                        if (videoTab != null) {
+                            val tabExtractor = service.getChannelTabExtractor(videoTab)
+                            val resultPage = tabExtractor.getPage(page)
+                            val items = resultPage?.items ?: emptyList()
+                            for (item in items) {
+                                if (item is StreamInfoItem) {
+                                    val track = mapStreamInfoItemToTrack(item, channel)
+                                    if (track != null && seenTrackIds.add(track.trackId)) {
+                                        tracks.add(track)
+                                    }
+                                }
+                            }
+                            val nextToken = if (resultPage?.hasNextPage() == true && resultPage.nextPage != null) {
+                                savePage(resultPage.nextPage)
+                            } else null
+                            return@withContext Result.success(ChannelVideosResult(tracks, nextToken))
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Fallo al paginar por pestaña de canal: ${e.message}")
+                    }
                 }
-                tracks.addAll(fallbackTracks)
+                return@withContext Result.success(ChannelVideosResult(emptyList(), null))
             }
 
-            Result.success(tracks)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error al obtener videos de canal ${channel.name}: ${e.message}", e)
+            // Primera página: Intentar con uploadsPlaylist (UU...)
+            if (uploadsPlaylistId != null) {
+                try {
+                    val playlistUrl = "https://www.youtube.com/playlist?list=$uploadsPlaylistId"
+                    val playlistExtractor = service.getPlaylistExtractor(playlistUrl)
+                    playlistExtractor.fetchPage()
+                    val totalVideos = try {
+                        val count = playlistExtractor.streamCount
+                        if (count > 0) count else null
+                    } catch (_: Exception) { null }
+                    val initialPage = playlistExtractor.initialPage
+                    val items = initialPage?.items ?: emptyList()
+                    for (item in items) {
+                        if (item is StreamInfoItem) {
+                            val track = mapStreamInfoItemToTrack(item, channel)
+                            if (track != null && seenTrackIds.add(track.trackId)) {
+                                tracks.add(track)
+                            }
+                        }
+                    }
+                    if (tracks.isNotEmpty()) {
+                        val nextToken = if (initialPage?.hasNextPage() == true && initialPage.nextPage != null) {
+                            savePage(initialPage.nextPage)
+                        } else null
+                        return@withContext Result.success(ChannelVideosResult(tracks, nextToken, totalVideos))
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "No se pudo cargar playlist de subidas $uploadsPlaylistId: ${e.message}, intentando tabs")
+                }
+            }
+
+            // Fallback: ChannelTabExtractor (pestaña videos)
+            try {
+                val channelExtractor = service.getChannelExtractor(channel.url)
+                channelExtractor.fetchPage()
+                val tabs = try { channelExtractor.tabs } catch (_: Exception) { emptyList() }
+                val videoTab = tabs.firstOrNull { tab ->
+                    try {
+                        tab.contentFilters?.any { it.equals("videos", ignoreCase = true) } == true
+                    } catch (_: Exception) { false }
+                } ?: tabs.firstOrNull()
+
+                if (videoTab != null) {
+                    val tabExtractor = service.getChannelTabExtractor(videoTab)
+                    tabExtractor.fetchPage()
+                    val initialPage = tabExtractor.initialPage
+                    val items = initialPage?.items ?: emptyList()
+                    for (item in items) {
+                        if (item is StreamInfoItem) {
+                            val track = mapStreamInfoItemToTrack(item, channel)
+                            if (track != null && seenTrackIds.add(track.trackId)) {
+                                tracks.add(track)
+                            }
+                        }
+                    }
+                    val nextToken = if (initialPage?.hasNextPage() == true && initialPage.nextPage != null) {
+                        savePage(initialPage.nextPage)
+                    } else null
+                    if (tracks.isNotEmpty()) {
+                        return@withContext Result.success(ChannelVideosResult(tracks, nextToken))
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error extrayendo pestaña de videos de ${channel.name}: ${e.message}")
+            }
+
+            // Fallback final: Búsqueda general por nombre del canal
             val searchRes = search(channel.name)
-            Result.success(searchRes.getOrElse { emptyList() })
+            val fallbackTracks = searchRes.getOrElse { emptyList() }.filter {
+                it.artistName.equals(channel.name, ignoreCase = true)
+            }
+            Result.success(ChannelVideosResult(fallbackTracks, null))
+        } catch (e: Exception) {
+            Log.e(TAG, "Error en getChannelVideosPaged para ${channel.name}: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun searchChannelVideos(
+        channel: ChannelCard,
+        query: String,
+        nextPageToken: String?
+    ): Result<ChannelVideosResult> = withContext(Dispatchers.IO) {
+        val trimmedQuery = query.trim()
+        if (trimmedQuery.isEmpty()) {
+            return@withContext getChannelVideosPaged(channel, null)
+        }
+
+        try {
+            val service = ServiceList.YouTube
+            val tracks = mutableListOf<Track>()
+            val seenTrackIds = mutableSetOf<String>()
+            val fullQuery = "${channel.name} $trimmedQuery"
+
+            if (!nextPageToken.isNullOrBlank()) {
+                val page = getPage(nextPageToken)
+                if (page != null) {
+                    val searchExtractor = service.getSearchExtractor(
+                        fullQuery,
+                        listOf(YoutubeSearchQueryHandlerFactory.VIDEOS),
+                        ""
+                    )
+                    val resultPage = searchExtractor.getPage(page)
+                    val items = resultPage?.items ?: emptyList()
+                    for (item in items) {
+                        if (item is StreamInfoItem) {
+                            val track = mapStreamInfoItemToTrack(item, channel)
+                            if (track != null && seenTrackIds.add(track.trackId)) {
+                                tracks.add(track)
+                            }
+                        }
+                    }
+                    val nextToken = if (resultPage?.hasNextPage() == true && resultPage.nextPage != null) {
+                        savePage(resultPage.nextPage)
+                    } else null
+                    return@withContext Result.success(ChannelVideosResult(tracks, nextToken))
+                }
+                return@withContext Result.success(ChannelVideosResult(emptyList(), null))
+            }
+
+            // Primera página de búsqueda interna
+            val searchExtractor = service.getSearchExtractor(
+                fullQuery,
+                listOf(YoutubeSearchQueryHandlerFactory.VIDEOS),
+                ""
+            )
+            searchExtractor.fetchPage()
+            val initialPage = searchExtractor.initialPage
+            val items = initialPage?.items ?: emptyList()
+            val allStreamItems = items.filterIsInstance<StreamInfoItem>()
+
+            // Priorizar videos subidos directamente por este canal
+            val channelMatches = allStreamItems.filter { item ->
+                item.uploaderUrl?.contains(channel.channelId) == true ||
+                item.uploaderName?.equals(channel.name, ignoreCase = true) == true
+            }
+
+            val itemsToUse = if (channelMatches.isNotEmpty()) channelMatches else allStreamItems
+            for (item in itemsToUse) {
+                val track = mapStreamInfoItemToTrack(item, channel)
+                if (track != null && seenTrackIds.add(track.trackId)) {
+                    tracks.add(track)
+                }
+            }
+
+            val nextToken = if (initialPage?.hasNextPage() == true && initialPage.nextPage != null) {
+                savePage(initialPage.nextPage)
+            } else null
+
+            Result.success(ChannelVideosResult(tracks, nextToken))
+        } catch (e: Exception) {
+            Log.e(TAG, "Error en searchChannelVideos para ${channel.name} con query '$query': ${e.message}", e)
+            Result.failure(e)
         }
     }
 

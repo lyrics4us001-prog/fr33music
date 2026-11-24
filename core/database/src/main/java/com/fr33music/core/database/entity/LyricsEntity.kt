@@ -8,6 +8,7 @@ data class LyricsEntity(
     @PrimaryKey
     val trackId: String,
     val plainText: String,
+    val syncedText: String? = null,
     val source: String,
     val timestamp: Long = System.currentTimeMillis()
 )

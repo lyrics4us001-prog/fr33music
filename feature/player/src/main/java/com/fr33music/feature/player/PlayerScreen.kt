@@ -6,15 +6,17 @@ import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -26,6 +28,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,6 +37,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
@@ -47,19 +52,23 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -71,13 +80,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.io.File
+import com.fr33music.core.lyrics.LrcParser
 import com.fr33music.core.database.dao.PlaylistWithSongCount
 import com.fr33music.core.database.download.DownloadState
 import com.fr33music.core.database.entity.DownloadStatus
@@ -470,61 +482,314 @@ fun PlayerScreen(
             }
         }
 
-        // ModalBottomSheet para mostrar la letra de la canción
+        // ModalBottomSheet para mostrar la letra de la canción (Estilo YouTube Music con Mini Player y Traducción)
         if (uiState.showLyricsSheet) {
             val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            val translationState by viewModel.translationState.collectAsStateWithLifecycle()
+
             ModalBottomSheet(
                 onDismissRequest = viewModel::closeLyrics,
                 sheetState = sheetState,
                 containerColor = ColorSurface,
+                dragHandle = null,
                 shape = RoundedCornerShape(topStart = Fr33Radius.large, topEnd = Fr33Radius.large)
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.medium),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                        .padding(bottom = Fr33Spacing.medium)
                 ) {
-                    Text(
-                        text = "Letra",
-                        style = Fr33Typography.headlineSmall,
-                        color = ColorTextPrimary
-                    )
-                    Text(
-                        text = "${track?.title} — ${track?.artistName}",
-                        style = Fr33Typography.bodyMedium,
-                        color = ColorTextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                    // 1. Mini Reproductor Superior Fijo (Carátula, Título, Artista, Traducir, Play/Pause, Cerrar)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = Fr33Spacing.medium, vertical = Fr33Spacing.small),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TrackThumbnail(
+                            thumbnailUrl = track?.thumbnailUrl,
+                            trackId = track?.trackId,
+                            contentDescription = track?.title,
+                            size = 42.dp,
+                            shapeRadius = Fr33Radius.small,
+                            modifier = Modifier.size(42.dp)
+                        )
+
+                        Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = track?.title ?: "Sin título",
+                                style = Fr33Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = ColorTextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = track?.artistName ?: "Artista desconocido",
+                                style = Fr33Typography.bodySmall,
+                                color = ColorTextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        val isTranslating = translationState is TranslationState.Loading
+                        val isTranslated = translationState is TranslationState.Success
+
+                        // Botón de Traducción ("G" / Translate)
+                        IconButton(
+                            onClick = { viewModel.translateLyrics(context) },
+                            enabled = !uiState.isLoadingLyrics && !isTranslating
+                        ) {
+                            if (isTranslating) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = ColorPrimary
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Translate,
+                                    contentDescription = "Traducir letras",
+                                    tint = if (isTranslated) ColorPrimary else ColorTextSecondary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+
+                        // Botón Play / Pausa
+                        IconButton(
+                            onClick = viewModel::togglePlayPause
+                        ) {
+                            Icon(
+                                imageVector = if (uiState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = if (uiState.isPlaying) "Pausar" else "Reproducir",
+                                tint = ColorTextPrimary,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+
+                        // Botón Cerrar (X)
+                        IconButton(
+                            onClick = viewModel::closeLyrics
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cerrar letra",
+                                tint = ColorTextSecondary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(
+                        color = ColorSurfaceVariant.copy(alpha = 0.5f),
+                        thickness = 1.dp
                     )
 
-                    Spacer(modifier = Modifier.height(Fr33Spacing.large))
+                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
 
                     if (uiState.isLoadingLyrics) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(200.dp),
+                                .height(300.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             CircularProgressIndicator(color = ColorPrimary)
                         }
                     } else {
-                        val scrollState = rememberScrollState()
-                        Text(
-                            text = uiState.lyrics ?: "Letra no disponible",
-                            style = Fr33Typography.bodyLarge,
-                            color = ColorTextPrimary,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(380.dp)
-                                .verticalScroll(scrollState)
-                                .padding(vertical = Fr33Spacing.medium)
-                        )
-                    }
+                        val parsedLines = remember(uiState.syncedLyrics) {
+                            LrcParser.parseLrc(uiState.syncedLyrics)
+                        }
 
-                    Spacer(modifier = Modifier.height(Fr33Spacing.large))
+                        if (parsedLines.isNotEmpty()) {
+                            val offsetSec = uiState.lyricsOffsetMs / 1000.0
+                            val offsetText = when {
+                                uiState.lyricsOffsetMs > 0 -> "+${String.format(java.util.Locale.US, "%.1f", offsetSec)}s"
+                                uiState.lyricsOffsetMs < 0 -> "${String.format(java.util.Locale.US, "%.1f", offsetSec)}s"
+                                else -> "0.0s"
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = Fr33Spacing.medium, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Surface(
+                                    onClick = { viewModel.adjustLyricsOffset(-500L) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = ColorSurfaceVariant.copy(alpha = 0.6f),
+                                    contentColor = ColorTextPrimary
+                                ) {
+                                    Text(
+                                        text = "-0.5s",
+                                        style = Fr33Typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+
+                                Text(
+                                    text = "Sincro: $offsetText",
+                                    style = Fr33Typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = if (uiState.lyricsOffsetMs != 0L) ColorPrimary else ColorTextSecondary,
+                                    modifier = Modifier.clickable(enabled = uiState.lyricsOffsetMs != 0L) {
+                                        viewModel.resetLyricsOffset()
+                                    }
+                                )
+
+                                Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+
+                                Surface(
+                                    onClick = { viewModel.adjustLyricsOffset(500L) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = ColorSurfaceVariant.copy(alpha = 0.6f),
+                                    contentColor = ColorTextPrimary
+                                ) {
+                                    Text(
+                                        text = "+0.5s",
+                                        style = Fr33Typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+
+                            val effectivePositionMs = uiState.positionMs + uiState.lyricsOffsetMs
+                            val activeIndex = remember(parsedLines, effectivePositionMs) {
+                                parsedLines.indexOfLast { it.timeMs <= effectivePositionMs }
+                            }
+                            val initialIndex = remember {
+                                parsedLines.indexOfLast { it.timeMs <= effectivePositionMs }.coerceAtLeast(0)
+                            }
+                            val listState = rememberLazyListState(initialFirstVisibleItemIndex = (initialIndex - 2).coerceAtLeast(0))
+
+                            LaunchedEffect(activeIndex) {
+                                if (activeIndex in parsedLines.indices && !listState.isScrollInProgress) {
+                                    val target = (activeIndex - 2).coerceAtLeast(0)
+                                    listState.animateScrollToItem(target)
+                                }
+                            }
+
+                            LazyColumn(
+                                state = listState,
+                                contentPadding = PaddingValues(vertical = 120.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(440.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                itemsIndexed(parsedLines) { index, line ->
+                                    val isActive = index == activeIndex
+                                    val animatedColor by animateColorAsState(
+                                        targetValue = if (isActive) Color.White else Color.White.copy(alpha = 0.35f),
+                                        label = "lyric_color"
+                                    )
+                                    val textStyle = if (isActive) {
+                                        Fr33Typography.titleLarge.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 20.sp,
+                                            lineHeight = 28.sp
+                                        )
+                                    } else {
+                                        Fr33Typography.bodyLarge.copy(
+                                            fontWeight = FontWeight.Normal,
+                                            fontSize = 16.sp,
+                                            lineHeight = 24.sp
+                                        )
+                                    }
+
+                                    val translatedLine = if (translationState is TranslationState.Success) {
+                                        (translationState as TranslationState.Success).translatedLines.getOrNull(index)
+                                    } else null
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                val targetTime = (line.timeMs - uiState.lyricsOffsetMs).coerceAtLeast(0L)
+                                                viewModel.seekTo(targetTime)
+                                            }
+                                            .padding(horizontal = Fr33Spacing.medium, vertical = if (isActive) 8.dp else 5.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(
+                                                text = line.text,
+                                                style = textStyle,
+                                                color = animatedColor,
+                                                textAlign = TextAlign.Center,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                            if (!translatedLine.isNullOrBlank()) {
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Text(
+                                                    text = "($translatedLine)",
+                                                    style = Fr33Typography.bodySmall.copy(
+                                                        fontSize = if (isActive) 14.sp else 12.sp,
+                                                        fontWeight = if (isActive) FontWeight.Medium else FontWeight.Normal
+                                                    ),
+                                                    color = if (isActive) Color.White.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.25f),
+                                                    textAlign = TextAlign.Center,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            val scrollState = rememberScrollState()
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(440.dp)
+                                    .verticalScroll(scrollState)
+                                    .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.medium),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = uiState.lyrics ?: "Letra no disponible",
+                                    style = Fr33Typography.bodyLarge,
+                                    color = ColorTextPrimary,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                if (translationState is TranslationState.Success && (translationState as TranslationState.Success).fullTranslatedText != null) {
+                                    Spacer(modifier = Modifier.height(Fr33Spacing.large))
+                                    HorizontalDivider(
+                                        color = ColorSurfaceVariant.copy(alpha = 0.6f),
+                                        modifier = Modifier.padding(horizontal = 24.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
+                                    Text(
+                                        text = "Traducción (Español):",
+                                        style = Fr33Typography.labelLarge,
+                                        color = ColorPrimary
+                                    )
+                                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
+                                    Text(
+                                        text = (translationState as TranslationState.Success).fullTranslatedText!!,
+                                        style = Fr33Typography.bodyMedium,
+                                        color = ColorTextSecondary,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
