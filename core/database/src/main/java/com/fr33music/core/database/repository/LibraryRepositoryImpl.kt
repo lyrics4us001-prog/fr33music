@@ -135,6 +135,12 @@ class LibraryRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun saveTracks(tracks: List<Track>) = withContext(Dispatchers.IO) {
+        for (track in tracks) {
+            save(track)
+        }
+    }
+
     override suspend fun deleteDownload(trackId: String) {
         withContext(Dispatchers.IO) {
             Log.i(TAG, "Eliminando descarga física para trackId: $trackId")
@@ -280,12 +286,23 @@ class LibraryRepositoryImpl @Inject constructor(
     // Playlists
     override fun getPlaylists(): Flow<List<PlaylistWithSongCount>> = playlistDao.getAllPlaylists()
 
+    override fun getSubPlaylists(parentPlaylistId: Long): Flow<List<PlaylistWithSongCount>> =
+        playlistDao.getSubPlaylists(parentPlaylistId)
+
     override fun getSongsForPlaylist(playlistId: Long): Flow<List<TrackEntity>> =
         playlistDao.getSongsForPlaylist(playlistId)
 
-    override suspend fun createPlaylist(name: String): Long = withContext(Dispatchers.IO) {
+    override fun getSongsForPlaylistRecursive(playlistId: Long): Flow<List<TrackEntity>> =
+        playlistDao.getSongsForPlaylistRecursive(playlistId)
+
+    override suspend fun getSongsForPlaylistRecursiveSync(playlistId: Long): List<TrackEntity> =
+        withContext(Dispatchers.IO) {
+            playlistDao.getSongsForPlaylistRecursiveSync(playlistId)
+        }
+
+    override suspend fun createPlaylist(name: String, parentPlaylistId: Long?): Long = withContext(Dispatchers.IO) {
         val trimmed = name.trim().ifEmpty { "Mi Playlist" }
-        playlistDao.insertPlaylist(PlaylistEntity(name = trimmed))
+        playlistDao.insertPlaylist(PlaylistEntity(name = trimmed, parentPlaylistId = parentPlaylistId))
     }
 
     override suspend fun renamePlaylist(playlistId: Long, newName: String) = withContext(Dispatchers.IO) {
@@ -295,9 +312,27 @@ class LibraryRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun mergePlaylists(sourcePlaylistId: Long, targetPlaylistId: Long) = withContext(Dispatchers.IO) {
+        if (sourcePlaylistId == targetPlaylistId) return@withContext
+        val songs = playlistDao.getSongsForPlaylistRecursiveSync(sourcePlaylistId)
+        if (songs.isNotEmpty()) {
+            val crossRefs = songs.map { PlaylistSongCrossRef(playlistId = targetPlaylistId, trackId = it.id) }
+            playlistDao.insertSongsToPlaylist(crossRefs)
+        }
+        playlistDao.reparentSubPlaylists(sourcePlaylistId, targetPlaylistId)
+        playlistDao.deletePlaylistSongs(sourcePlaylistId)
+        playlistDao.deletePlaylist(sourcePlaylistId)
+    }
+
     override suspend fun deletePlaylist(id: Long) = withContext(Dispatchers.IO) {
-        playlistDao.deletePlaylistSongs(id)
-        playlistDao.deletePlaylist(id)
+        val ids = playlistDao.getDescendantPlaylistIdsSync(id)
+        if (ids.isNotEmpty()) {
+            playlistDao.deletePlaylistSongsByIds(ids)
+            playlistDao.deletePlaylistsByIds(ids)
+        } else {
+            playlistDao.deletePlaylistSongs(id)
+            playlistDao.deletePlaylist(id)
+        }
     }
 
     override suspend fun addSongToPlaylist(playlistId: Long, track: Track) = withContext(Dispatchers.IO) {

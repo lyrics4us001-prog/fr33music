@@ -36,7 +36,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
@@ -83,6 +86,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fr33music.core.database.dao.PlaylistWithSongCount
 import com.fr33music.core.designsystem.component.ErrorView
 import com.fr33music.core.designsystem.component.LoadingSkeleton
+import com.fr33music.core.designsystem.component.SelectionBottomBar
+import com.fr33music.core.designsystem.component.SelectionTopBar
 import com.fr33music.core.designsystem.component.TrackRow
 import com.fr33music.core.designsystem.component.TrackThumbnail
 import com.fr33music.core.designsystem.theme.ColorBackground
@@ -128,6 +133,8 @@ fun SearchScreen(
     var songForPlaylistDialog by remember { mutableStateOf<Track?>(null) }
     var bulkTracksForPlaylistDialog by remember { mutableStateOf<List<Track>?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var selectedTracks by remember { mutableStateOf<Map<String, Track>>(emptyMap()) }
+    val isSelectionMode = selectedTracks.isNotEmpty()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val textToolbar = LocalTextToolbar.current
@@ -152,7 +159,10 @@ fun SearchScreen(
     }
 
     // Limpia el foco y oculta el teclado si el usuario presiona Atrás mientras busca
-    BackHandler(enabled = isSearchFocused) {
+    BackHandler(enabled = isSelectionMode) {
+        selectedTracks = emptyMap()
+    }
+    BackHandler(enabled = isSearchFocused && !isSelectionMode) {
         clearSearchFocus()
     }
 
@@ -184,7 +194,28 @@ fun SearchScreen(
             },
             onToggleSave = viewModel::toggleSave,
             onAddToPlaylist = { track -> songForPlaylistDialog = track },
-            onBulkAddToPlaylist = { tracks -> bulkTracksForPlaylistDialog = tracks }
+            onBulkAddToPlaylist = { tracks -> bulkTracksForPlaylistDialog = tracks },
+            isSelectionMode = isSelectionMode,
+            selectedTrackIds = selectedTracks.keys,
+            onToggleSelection = { track ->
+                selectedTracks = if (selectedTracks.containsKey(track.trackId)) {
+                    selectedTracks - track.trackId
+                } else {
+                    selectedTracks + (track.trackId to track)
+                }
+            },
+            onSelectAll = { list -> selectedTracks = list.associateBy { it.trackId } },
+            onCancelSelection = { selectedTracks = emptyMap() },
+            onBulkAddToFavorites = {
+                val list = selectedTracks.values.toList()
+                viewModel.saveTracks(list)
+                Toast.makeText(
+                    context,
+                    "${list.size} ${if (list.size == 1) "canción añadida" else "canciones añadidas"} a Favoritos",
+                    Toast.LENGTH_SHORT
+                ).show()
+                selectedTracks = emptyMap()
+            }
         )
     } else if (selectedAlbum != null) {
         // Pantalla de detalle de álbum/playlist
@@ -218,7 +249,28 @@ fun SearchScreen(
             onDownloadAll = onDownloadAll,
             onToggleSave = viewModel::toggleSave,
             onAddToPlaylist = { track -> songForPlaylistDialog = track },
-            onBulkAddToPlaylist = { tracks -> bulkTracksForPlaylistDialog = tracks }
+            onBulkAddToPlaylist = { tracks -> bulkTracksForPlaylistDialog = tracks },
+            isSelectionMode = isSelectionMode,
+            selectedTrackIds = selectedTracks.keys,
+            onToggleSelection = { track ->
+                selectedTracks = if (selectedTracks.containsKey(track.trackId)) {
+                    selectedTracks - track.trackId
+                } else {
+                    selectedTracks + (track.trackId to track)
+                }
+            },
+            onSelectAll = { list -> selectedTracks = list.associateBy { it.trackId } },
+            onCancelSelection = { selectedTracks = emptyMap() },
+            onBulkAddToFavorites = {
+                val list = selectedTracks.values.toList()
+                viewModel.saveTracks(list)
+                Toast.makeText(
+                    context,
+                    "${list.size} ${if (list.size == 1) "canción añadida" else "canciones añadidas"} a Favoritos",
+                    Toast.LENGTH_SHORT
+                ).show()
+                selectedTracks = emptyMap()
+            }
         )
     } else {
         // Pantalla principal del buscador
@@ -240,12 +292,26 @@ fun SearchScreen(
                     )
                 }
         ) {
-        // Search Input Bar
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.medium)
-        ) {
+        // Search Input Bar or Selection Top Bar
+        if (isSelectionMode) {
+            SelectionTopBar(
+                selectedCount = selectedTracks.size,
+                onSelectAll = {
+                    val allVisible = when (val st = uiState) {
+                        is SearchUiState.LookingSuccess -> st.result.videos
+                        is SearchUiState.Success -> st.tracks
+                        else -> emptyList()
+                    }
+                    selectedTracks = allVisible.associateBy { it.trackId }
+                },
+                onCancel = { selectedTracks = emptyMap() }
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.medium)
+            ) {
             OutlinedTextField(
                 value = query,
                 onValueChange = viewModel::onQueryChange,
@@ -297,6 +363,7 @@ fun SearchScreen(
                 )
             )
         }
+        }
 
         // Search Content
         Box(
@@ -315,18 +382,36 @@ fun SearchScreen(
                     LookingResultsView(
                         result = state.result,
                         savedTrackIds = savedTrackIds,
+                        isSelectionMode = isSelectionMode,
+                        selectedTrackIds = selectedTracks.keys,
                         onChannelClick = { channel ->
-                            clearSearchFocus()
-                            viewModel.selectChannel(channel)
+                            if (!isSelectionMode) {
+                                clearSearchFocus()
+                                viewModel.selectChannel(channel)
+                            }
                         },
                         onPlaylistClick = { playlist ->
-                            clearSearchFocus()
-                            viewModel.selectAlbum(playlist)
+                            if (!isSelectionMode) {
+                                clearSearchFocus()
+                                viewModel.selectAlbum(playlist)
+                            }
                         },
                         onTrackClick = { track ->
+                            if (isSelectionMode) {
+                                selectedTracks = if (selectedTracks.containsKey(track.trackId)) {
+                                    selectedTracks - track.trackId
+                                } else {
+                                    selectedTracks + (track.trackId to track)
+                                }
+                            } else {
+                                clearSearchFocus()
+                                viewModel.onTrackClick(track)
+                                onTrackSelected(track)
+                            }
+                        },
+                        onTrackLongClick = { track ->
                             clearSearchFocus()
-                            viewModel.onTrackClick(track)
-                            onTrackSelected(track)
+                            selectedTracks = selectedTracks + (track.trackId to track)
                         },
                         onToggleSave = viewModel::toggleSave,
                         onAddToPlaylist = { track ->
@@ -337,29 +422,46 @@ fun SearchScreen(
                 is SearchUiState.Success -> {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(state.tracks, key = { it.trackId }) { track ->
+                            val isSelected = selectedTracks.containsKey(track.trackId)
                             TrackRow(
                                 track = track,
+                                isSelectionMode = isSelectionMode,
+                                isSelected = isSelected,
                                 onClick = {
-                                    clearSearchFocus()
-                                    viewModel.onTrackClick(track)
-                                    onTrackSelected(track)
-                                },
-                                trailingContent = {
-                                    val isSaved = savedTrackIds.contains(track.trackId)
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        IconButton(onClick = { viewModel.toggleSave(track) }) {
-                                            Icon(
-                                                imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                                contentDescription = if (isSaved) "Guardado" else "Guardar",
-                                                tint = if (isSaved) ColorPrimary else ColorTextSecondary
-                                            )
+                                    if (isSelectionMode) {
+                                        selectedTracks = if (isSelected) {
+                                            selectedTracks - track.trackId
+                                        } else {
+                                            selectedTracks + (track.trackId to track)
                                         }
-                                        IconButton(onClick = { songForPlaylistDialog = track }) {
-                                            Icon(
-                                                imageVector = Icons.Default.PlaylistAdd,
-                                                contentDescription = "Añadir a playlist",
-                                                tint = ColorTextSecondary
-                                            )
+                                    } else {
+                                        clearSearchFocus()
+                                        viewModel.onTrackClick(track)
+                                        onTrackSelected(track)
+                                    }
+                                },
+                                onLongClick = {
+                                    clearSearchFocus()
+                                    selectedTracks = selectedTracks + (track.trackId to track)
+                                },
+                                trailingContent = if (isSelectionMode) null else {
+                                    {
+                                        val isSaved = savedTrackIds.contains(track.trackId)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            IconButton(onClick = { viewModel.toggleSave(track) }) {
+                                                Icon(
+                                                    imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                                    contentDescription = if (isSaved) "Guardado" else "Guardar",
+                                                    tint = if (isSaved) ColorPrimary else ColorTextSecondary
+                                                )
+                                            }
+                                            IconButton(onClick = { songForPlaylistDialog = track }) {
+                                                Icon(
+                                                    imageVector = Icons.Default.PlaylistAdd,
+                                                    contentDescription = "Añadir a playlist",
+                                                    tint = ColorTextSecondary
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -384,7 +486,7 @@ fun SearchScreen(
             }
 
             // Sugerencias e historial flotante cuando la barra de búsqueda está activa
-            if (isSearchFocused && (recentSearches.isNotEmpty() || suggestions.isNotEmpty())) {
+            if (isSearchFocused && !isSelectionMode && (recentSearches.isNotEmpty() || suggestions.isNotEmpty())) {
                 SearchSuggestionsOverlay(
                     recentSearches = recentSearches,
                     suggestions = suggestions,
@@ -397,6 +499,25 @@ fun SearchScreen(
                     }
                 )
             }
+        }
+
+        if (isSelectionMode) {
+            SelectionBottomBar(
+                onAddToPlaylist = {
+                    bulkTracksForPlaylistDialog = selectedTracks.values.toList()
+                },
+                onAddToFavorites = {
+                    val tracksToSave = selectedTracks.values.toList()
+                    viewModel.saveTracks(tracksToSave)
+                    Toast.makeText(
+                        context,
+                        "${tracksToSave.size} ${if (tracksToSave.size == 1) "canción añadida" else "canciones añadidas"} a Favoritos",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    selectedTracks = emptyMap()
+                },
+                onDelete = null
+            )
         }
     }
 }
@@ -448,6 +569,7 @@ fun SearchScreen(
                     Toast.LENGTH_SHORT
                 ).show()
                 bulkTracksForPlaylistDialog = null
+                selectedTracks = emptyMap()
             },
             onDeletePlaylist = { playlistId ->
                 viewModel.deletePlaylist(playlistId)
@@ -469,9 +591,12 @@ fun SearchScreen(
 private fun LookingResultsView(
     result: LookingSearchResult,
     savedTrackIds: Set<String>,
+    isSelectionMode: Boolean = false,
+    selectedTrackIds: Set<String> = emptySet(),
     onChannelClick: (ChannelCard) -> Unit,
     onPlaylistClick: (AlbumCard) -> Unit,
     onTrackClick: (Track) -> Unit,
+    onTrackLongClick: (Track) -> Unit = {},
     onToggleSave: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit
 ) {
@@ -557,25 +682,31 @@ private fun LookingResultsView(
                 items = result.videos,
                 key = { index, track -> "${track.trackId}_$index" }
             ) { _, track ->
+                val isSelected = selectedTrackIds.contains(track.trackId)
                 TrackRow(
                     track = track,
+                    isSelectionMode = isSelectionMode,
+                    isSelected = isSelected,
                     onClick = { onTrackClick(track) },
-                    trailingContent = {
-                        val isSaved = savedTrackIds.contains(track.trackId)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { onToggleSave(track) }) {
-                                Icon(
-                                    imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                    contentDescription = if (isSaved) "Guardado" else "Guardar",
-                                    tint = if (isSaved) ColorPrimary else ColorTextSecondary
-                                )
-                            }
-                            IconButton(onClick = { onAddToPlaylist(track) }) {
-                                Icon(
-                                    imageVector = Icons.Default.PlaylistAdd,
-                                    contentDescription = "Añadir a playlist",
-                                    tint = ColorTextSecondary
-                                )
+                    onLongClick = { onTrackLongClick(track) },
+                    trailingContent = if (isSelectionMode) null else {
+                        {
+                            val isSaved = savedTrackIds.contains(track.trackId)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { onToggleSave(track) }) {
+                                    Icon(
+                                        imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                        contentDescription = if (isSaved) "Guardado" else "Guardar",
+                                        tint = if (isSaved) ColorPrimary else ColorTextSecondary
+                                    )
+                                }
+                                IconButton(onClick = { onAddToPlaylist(track) }) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlaylistAdd,
+                                        contentDescription = "Añadir a playlist",
+                                        tint = ColorTextSecondary
+                                    )
+                                }
                             }
                         }
                     }
@@ -723,7 +854,13 @@ private fun SearchChannelDetailView(
     onPlayAll: (List<Track>, Boolean) -> Unit = { _, _ -> },
     onToggleSave: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
-    onBulkAddToPlaylist: (List<Track>) -> Unit = {}
+    onBulkAddToPlaylist: (List<Track>) -> Unit = {},
+    isSelectionMode: Boolean = false,
+    selectedTrackIds: Set<String> = emptySet(),
+    onToggleSelection: (Track) -> Unit = {},
+    onSelectAll: (List<Track>) -> Unit = {},
+    onCancelSelection: () -> Unit = {},
+    onBulkAddToFavorites: () -> Unit = {}
 ) {
     val listState = rememberLazyListState()
 
@@ -744,41 +881,51 @@ private fun SearchChannelDetailView(
         }
     }
 
-    BackHandler { onBack() }
+    BackHandler {
+        if (isSelectionMode) onCancelSelection() else onBack()
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(ColorBackground)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Fr33Spacing.small, vertical = Fr33Spacing.small),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Volver",
-                    tint = ColorTextPrimary
-                )
-            }
-            Text(
-                text = channel.name,
-                style = Fr33Typography.titleLarge,
-                color = ColorTextPrimary,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+        if (isSelectionMode) {
+            SelectionTopBar(
+                selectedCount = selectedTrackIds.size,
+                onSelectAll = { onSelectAll(videos) },
+                onCancel = onCancelSelection
             )
-            if (videos.isNotEmpty()) {
-                IconButton(onClick = { onBulkAddToPlaylist(videos) }) {
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Fr33Spacing.small, vertical = Fr33Spacing.small),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                        contentDescription = "Añadir todas a una playlist",
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Volver",
                         tint = ColorTextPrimary
                     )
+                }
+                Text(
+                    text = channel.name,
+                    style = Fr33Typography.titleLarge,
+                    color = ColorTextPrimary,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (videos.isNotEmpty()) {
+                    IconButton(onClick = { onBulkAddToPlaylist(videos) }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                            contentDescription = "Añadir todas a una playlist",
+                            tint = ColorTextPrimary
+                        )
+                    }
                 }
             }
         }
@@ -829,7 +976,9 @@ private fun SearchChannelDetailView(
 
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
             contentPadding = PaddingValues(bottom = Fr33Spacing.extraLarge)
         ) {
             item {
@@ -943,25 +1092,37 @@ private fun SearchChannelDetailView(
                     items = videos,
                     key = { index, track -> "${track.trackId}_$index" }
                 ) { index, track ->
+                    val isSelected = selectedTrackIds.contains(track.trackId)
                     TrackRow(
                         track = track,
-                        onClick = { onTrackClick(track, videos, index) },
-                        trailingContent = {
-                            val isSaved = savedTrackIds.contains(track.trackId)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { onToggleSave(track) }) {
-                                    Icon(
-                                        imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                        contentDescription = if (isSaved) "Guardado" else "Guardar",
-                                        tint = if (isSaved) ColorPrimary else ColorTextSecondary
-                                    )
-                                }
-                                IconButton(onClick = { onAddToPlaylist(track) }) {
-                                    Icon(
-                                        imageVector = Icons.Default.PlaylistAdd,
-                                        contentDescription = "Añadir a playlist",
-                                        tint = ColorTextSecondary
-                                    )
+                        isSelectionMode = isSelectionMode,
+                        isSelected = isSelected,
+                        onClick = {
+                            if (isSelectionMode) {
+                                onToggleSelection(track)
+                            } else {
+                                onTrackClick(track, videos, index)
+                            }
+                        },
+                        onLongClick = { onToggleSelection(track) },
+                        trailingContent = if (isSelectionMode) null else {
+                            {
+                                val isSaved = savedTrackIds.contains(track.trackId)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { onToggleSave(track) }) {
+                                        Icon(
+                                            imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                            contentDescription = if (isSaved) "Guardado" else "Guardar",
+                                            tint = if (isSaved) ColorPrimary else ColorTextSecondary
+                                        )
+                                    }
+                                    IconButton(onClick = { onAddToPlaylist(track) }) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlaylistAdd,
+                                            contentDescription = "Añadir a playlist",
+                                            tint = ColorTextSecondary
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1018,6 +1179,17 @@ private fun SearchChannelDetailView(
                 }
             }
         }
+
+        if (isSelectionMode) {
+            SelectionBottomBar(
+                onAddToPlaylist = {
+                    val selected = videos.filter { selectedTrackIds.contains(it.trackId) }
+                    onBulkAddToPlaylist(selected)
+                },
+                onAddToFavorites = onBulkAddToFavorites,
+                onDelete = null
+            )
+        }
     }
 }
 
@@ -1039,7 +1211,13 @@ private fun SearchAlbumDetailView(
     onDownloadAll: (List<Track>) -> Unit = {},
     onToggleSave: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
-    onBulkAddToPlaylist: (List<Track>) -> Unit = {}
+    onBulkAddToPlaylist: (List<Track>) -> Unit = {},
+    isSelectionMode: Boolean = false,
+    selectedTrackIds: Set<String> = emptySet(),
+    onToggleSelection: (Track) -> Unit = {},
+    onSelectAll: (List<Track>) -> Unit = {},
+    onCancelSelection: () -> Unit = {},
+    onBulkAddToFavorites: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     val filteredTracks = remember(tracks, searchQuery) {
@@ -1057,41 +1235,51 @@ private fun SearchAlbumDetailView(
         }
     }
 
-    BackHandler { onBack() }
+    BackHandler {
+        if (isSelectionMode) onCancelSelection() else onBack()
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(ColorBackground)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Fr33Spacing.small, vertical = Fr33Spacing.small),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Volver",
-                    tint = ColorTextPrimary
-                )
-            }
-            Text(
-                text = album.title,
-                style = Fr33Typography.titleLarge,
-                color = ColorTextPrimary,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+        if (isSelectionMode) {
+            SelectionTopBar(
+                selectedCount = selectedTrackIds.size,
+                onSelectAll = { onSelectAll(filteredTracks) },
+                onCancel = onCancelSelection
             )
-            if (tracks.isNotEmpty()) {
-                IconButton(onClick = { onBulkAddToPlaylist(tracks) }) {
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Fr33Spacing.small, vertical = Fr33Spacing.small),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                        contentDescription = "Añadir todas a una playlist",
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Volver",
                         tint = ColorTextPrimary
                     )
+                }
+                Text(
+                    text = album.title,
+                    style = Fr33Typography.titleLarge,
+                    color = ColorTextPrimary,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (tracks.isNotEmpty()) {
+                    IconButton(onClick = { onBulkAddToPlaylist(tracks) }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                            contentDescription = "Añadir todas a una playlist",
+                            tint = ColorTextPrimary
+                        )
+                    }
                 }
             }
         }
@@ -1142,7 +1330,9 @@ private fun SearchAlbumDetailView(
 
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
             contentPadding = PaddingValues(bottom = Fr33Spacing.extraLarge)
         ) {
             item {
@@ -1245,25 +1435,37 @@ private fun SearchAlbumDetailView(
                     items = filteredTracks,
                     key = { index, track -> "${track.trackId}_$index" }
                 ) { index, track ->
+                    val isSelected = selectedTrackIds.contains(track.trackId)
                     TrackRow(
                         track = track,
-                        onClick = { onTrackClick(track, filteredTracks, index) },
-                        trailingContent = {
-                            val isSaved = savedTrackIds.contains(track.trackId)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { onToggleSave(track) }) {
-                                    Icon(
-                                        imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                        contentDescription = if (isSaved) "Guardado" else "Guardar",
-                                        tint = if (isSaved) ColorPrimary else ColorTextSecondary
-                                    )
-                                }
-                                IconButton(onClick = { onAddToPlaylist(track) }) {
-                                    Icon(
-                                        imageVector = Icons.Default.PlaylistAdd,
-                                        contentDescription = "Añadir a playlist",
-                                        tint = ColorTextSecondary
-                                    )
+                        isSelectionMode = isSelectionMode,
+                        isSelected = isSelected,
+                        onClick = {
+                            if (isSelectionMode) {
+                                onToggleSelection(track)
+                            } else {
+                                onTrackClick(track, filteredTracks, index)
+                            }
+                        },
+                        onLongClick = { onToggleSelection(track) },
+                        trailingContent = if (isSelectionMode) null else {
+                            {
+                                val isSaved = savedTrackIds.contains(track.trackId)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { onToggleSave(track) }) {
+                                        Icon(
+                                            imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                            contentDescription = if (isSaved) "Guardado" else "Guardar",
+                                            tint = if (isSaved) ColorPrimary else ColorTextSecondary
+                                        )
+                                    }
+                                    IconButton(onClick = { onAddToPlaylist(track) }) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlaylistAdd,
+                                            contentDescription = "Añadir a playlist",
+                                            tint = ColorTextSecondary
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1275,6 +1477,17 @@ private fun SearchAlbumDetailView(
                     )
                 }
             }
+        }
+
+        if (isSelectionMode) {
+            SelectionBottomBar(
+                onAddToPlaylist = {
+                    val selected = filteredTracks.filter { selectedTrackIds.contains(it.trackId) }
+                    onBulkAddToPlaylist(selected)
+                },
+                onAddToFavorites = onBulkAddToFavorites,
+                onDelete = null
+            )
         }
     }
 }
@@ -1457,37 +1670,107 @@ private fun AddToPlaylistDialog(
                         color = ColorTextTertiary,
                         modifier = Modifier.padding(bottom = Fr33Spacing.small)
                     )
+                    val rootPlaylists = remember(playlists) { playlists.filter { it.parentPlaylistId == null } }
+                    val subPlaylistsByParent = remember(playlists) {
+                        playlists.filter { it.parentPlaylistId != null }.groupBy { it.parentPlaylistId }
+                    }
+                    var expandedPlaylistIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+
                     LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                        items(playlists, key = { it.id }) { playlist ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(Fr33Radius.small))
-                                    .combinedClickable(
-                                        onClick = { onSelectPlaylist(playlist.id, playlist.name) },
-                                        onLongClick = { playlistToDelete = playlist }
+                        items(rootPlaylists, key = { it.id }) { playlist ->
+                            val children = subPlaylistsByParent[playlist.id].orEmpty()
+                            val isExpanded = expandedPlaylistIds.contains(playlist.id)
+
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(Fr33Radius.small))
+                                        .combinedClickable(
+                                            onClick = { onSelectPlaylist(playlist.id, playlist.name) },
+                                            onLongClick = { playlistToDelete = playlist }
+                                        )
+                                        .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.QueueMusic,
+                                        contentDescription = null,
+                                        tint = ColorPrimary,
+                                        modifier = Modifier.size(24.dp)
                                     )
-                                    .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.QueueMusic,
-                                    contentDescription = null,
-                                    tint = ColorPrimary,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.width(Fr33Spacing.medium))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = playlist.name,
-                                        style = Fr33Typography.titleMedium,
-                                        color = ColorTextPrimary
-                                    )
-                                    Text(
-                                        text = "${playlist.songCount} canciones",
-                                        style = Fr33Typography.bodySmall,
-                                        color = ColorTextSecondary
-                                    )
+                                    Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = playlist.name,
+                                            style = Fr33Typography.titleMedium,
+                                            color = ColorTextPrimary
+                                        )
+                                        val subText = if (children.isNotEmpty()) {
+                                            "${playlist.songCount} canciones • ${children.size} ${if (children.size == 1) "sub-playlist" else "sub-playlists"}"
+                                        } else {
+                                            "${playlist.songCount} canciones"
+                                        }
+                                        Text(
+                                            text = subText,
+                                            style = Fr33Typography.bodySmall,
+                                            color = ColorTextSecondary
+                                        )
+                                    }
+                                    if (children.isNotEmpty()) {
+                                        IconButton(
+                                            onClick = {
+                                                expandedPlaylistIds = if (isExpanded) {
+                                                    expandedPlaylistIds - playlist.id
+                                                } else {
+                                                    expandedPlaylistIds + playlist.id
+                                                }
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                                contentDescription = if (isExpanded) "Contraer" else "Expandir",
+                                                tint = ColorPrimary
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (isExpanded && children.isNotEmpty()) {
+                                    children.forEach { sub ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(start = 28.dp)
+                                                .clip(RoundedCornerShape(Fr33Radius.small))
+                                                .combinedClickable(
+                                                    onClick = { onSelectPlaylist(sub.id, sub.name) },
+                                                    onLongClick = { playlistToDelete = sub }
+                                                )
+                                                .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Folder,
+                                                contentDescription = null,
+                                                tint = ColorPrimary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = sub.name,
+                                                    style = Fr33Typography.bodyLarge,
+                                                    color = ColorTextPrimary
+                                                )
+                                                Text(
+                                                    text = "${sub.songCount} canciones",
+                                                    style = Fr33Typography.bodySmall,
+                                                    color = ColorTextSecondary
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

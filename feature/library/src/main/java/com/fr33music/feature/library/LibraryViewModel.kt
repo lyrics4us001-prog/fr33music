@@ -64,11 +64,15 @@ data class LibraryUiState(
     val selectedTab: LibraryTab = LibraryTab.ARTISTS,
     val artists: List<ArtistItem> = emptyList(),
     val playlists: List<PlaylistWithSongCount> = emptyList(),
+    val allPlaylists: List<PlaylistWithSongCount> = emptyList(),
+    val subPlaylists: List<PlaylistWithSongCount> = emptyList(),
     val allSongs: List<TrackEntity> = emptyList(),
     val selectedArtist: String? = null,
     val selectedPlaylistId: Long? = null,
     val selectedPlaylistName: String? = null,
+    val selectedPlaylistParentId: Long? = null,
     val playlistSongs: List<TrackEntity> = emptyList(),
+    val playlistRecursiveSongs: List<TrackEntity> = emptyList(),
     val filteredTracks: List<TrackEntity> = emptyList(),
     val sortOrder: LibrarySortOrder = LibrarySortOrder.RECENTLY_ADDED
 )
@@ -87,6 +91,7 @@ class LibraryViewModel @Inject constructor(
 
     private val _selectedTab = MutableStateFlow(LibraryTab.ARTISTS)
     private val _selectedArtist = MutableStateFlow<String?>(null)
+    private val _playlistStack = MutableStateFlow<List<Pair<Long, String>>>(emptyList())
     private val _selectedPlaylistId = MutableStateFlow<Long?>(null)
     private val _selectedPlaylistName = MutableStateFlow<String?>(null)
     private val _sortOrder = MutableStateFlow(LibrarySortOrder.RECENTLY_ADDED)
@@ -110,11 +115,23 @@ class LibraryViewModel @Inject constructor(
         FilterSelection(tab, artist, playlistId, playlistName, sortOrder)
     }
 
-    private val playlistSongsFlow = _selectedPlaylistId.flatMapLatest { playlistId ->
+    private data class PlaylistDetailData(
+        val directSongs: List<TrackEntity> = emptyList(),
+        val recursiveSongs: List<TrackEntity> = emptyList(),
+        val subPlaylists: List<PlaylistWithSongCount> = emptyList()
+    )
+
+    private val playlistDetailFlow = _selectedPlaylistId.flatMapLatest { playlistId ->
         if (playlistId != null) {
-            libraryRepository.getSongsForPlaylist(playlistId)
+            combine(
+                libraryRepository.getSongsForPlaylist(playlistId),
+                libraryRepository.getSongsForPlaylistRecursive(playlistId),
+                libraryRepository.getSubPlaylists(playlistId)
+            ) { direct, recursive, subs ->
+                PlaylistDetailData(direct, recursive, subs)
+            }
         } else {
-            flowOf(emptyList())
+            flowOf(PlaylistDetailData())
         }
     }
 
@@ -123,8 +140,8 @@ class LibraryViewModel @Inject constructor(
         trackDao.getAllTracks(),
         artistDao.getAllArtists(),
         libraryRepository.getPlaylists(),
-        playlistSongsFlow
-    ) { filter, allTracks, artistEntities, playlistsList, playlistSongs ->
+        playlistDetailFlow
+    ) { filter, allTracks, artistEntities, playlistsList, playlistDetail ->
         val allLibraryTracks = allTracks
 
         // Lista de "Todas las canciones": ordenadas según sortOrder
@@ -135,19 +152,38 @@ class LibraryViewModel @Inject constructor(
             )
         }
 
-        // Playlists: ordenadas según sortOrder
+        // Playlists raíz: solo las que no tienen parentPlaylistId, ordenadas según sortOrder
+        val rootPlaylists = playlistsList.filter { it.parentPlaylistId == null }
         val playlistsSorted = when (filter.sortOrder) {
+            LibrarySortOrder.RECENTLY_ADDED -> rootPlaylists.sortedByDescending { it.createdAt }
+            LibrarySortOrder.ALPHABETICAL -> rootPlaylists.sortedBy { it.name.lowercase() }
+        }
+        val allPlaylistsSorted = when (filter.sortOrder) {
             LibrarySortOrder.RECENTLY_ADDED -> playlistsList.sortedByDescending { it.createdAt }
             LibrarySortOrder.ALPHABETICAL -> playlistsList.sortedBy { it.name.lowercase() }
         }
 
-        // Canciones de playlist: ordenadas según sortOrder
+        // Sub-playlists de la playlist seleccionada, ordenadas según sortOrder
+        val subPlaylistsSorted = when (filter.sortOrder) {
+            LibrarySortOrder.RECENTLY_ADDED -> playlistDetail.subPlaylists.sortedByDescending { it.createdAt }
+            LibrarySortOrder.ALPHABETICAL -> playlistDetail.subPlaylists.sortedBy { it.name.lowercase() }
+        }
+
+        // Canciones directas y recursivas de playlist: ordenadas según sortOrder
         val playlistSongsSorted = when (filter.sortOrder) {
-            LibrarySortOrder.RECENTLY_ADDED -> playlistSongs
-            LibrarySortOrder.ALPHABETICAL -> playlistSongs.sortedWith(
-                compareBy({ it.artistName.lowercase() }, { it.title.lowercase() })
+            LibrarySortOrder.RECENTLY_ADDED -> playlistDetail.directSongs
+            LibrarySortOrder.ALPHABETICAL -> playlistDetail.directSongs.sortedWith(
+                compareBy({ it.title.lowercase() }, { it.artistName.lowercase() })
             )
         }
+        val playlistRecursiveSorted = when (filter.sortOrder) {
+            LibrarySortOrder.RECENTLY_ADDED -> playlistDetail.recursiveSongs
+            LibrarySortOrder.ALPHABETICAL -> playlistDetail.recursiveSongs.sortedWith(
+                compareBy({ it.title.lowercase() }, { it.artistName.lowercase() })
+            )
+        }
+
+        val currentPlaylistEntity = playlistsList.firstOrNull { it.id == filter.playlistId }
 
         // Agrupación por artista con fallback de miniatura y ordenamiento según sortOrder (filtrado a canciones guardadas/descargadas)
         val artistSourceTracks = allLibraryTracks.filter { it.isSaved || it.isDownloaded }
@@ -155,10 +191,10 @@ class LibraryViewModel @Inject constructor(
             .groupBy { it.artistName }
             .map { (artistName, trackList) ->
                 val entity = artistEntities.firstOrNull { it.name.equals(artistName, ignoreCase = true) }
-                val firstValidThumbTrack = trackList.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }
+                val firstValidThumbTrack = trackList.firstOrNull { isValidImageUrl(it.thumbnailUrl) }
                 val firstTrack = trackList.firstOrNull()
-                val thumb = entity?.thumbnailUrl?.takeIf { it.isNotBlank() }
-                    ?: firstValidThumbTrack?.thumbnailUrl?.takeIf { it.isNotBlank() }
+                val thumb = entity?.thumbnailUrl?.takeIf { isValidImageUrl(it) }
+                    ?: firstValidThumbTrack?.thumbnailUrl?.takeIf { isValidImageUrl(it) }
                     ?: firstTrack?.let { "https://i.ytimg.com/vi/${it.id}/hqdefault.jpg" }
                 val firstTrackId = firstValidThumbTrack?.id ?: firstTrack?.id
                 val maxTimestamp = trackList.maxOfOrNull { it.timestamp } ?: 0L
@@ -193,11 +229,15 @@ class LibraryViewModel @Inject constructor(
             selectedTab = filter.tab,
             artists = artistItems,
             playlists = playlistsSorted,
+            allPlaylists = allPlaylistsSorted,
+            subPlaylists = subPlaylistsSorted,
             allSongs = allSongsSorted,
             selectedArtist = filter.artist,
             selectedPlaylistId = filter.playlistId,
             selectedPlaylistName = filter.playlistName,
+            selectedPlaylistParentId = currentPlaylistEntity?.parentPlaylistId,
             playlistSongs = playlistSongsSorted,
+            playlistRecursiveSongs = playlistRecursiveSorted,
             filteredTracks = filtered,
             sortOrder = filter.sortOrder
         )
@@ -207,6 +247,18 @@ class LibraryViewModel @Inject constructor(
         initialValue = LibraryUiState()
     )
 
+    private fun isValidImageUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        if (url.startsWith("file://")) {
+            val path = Uri.parse(url).path ?: return false
+            return java.io.File(path).exists()
+        }
+        if (url.startsWith("/")) {
+            return java.io.File(url).exists()
+        }
+        return true
+    }
+
     fun setSortOrder(order: LibrarySortOrder) {
         _sortOrder.value = order
     }
@@ -214,6 +266,7 @@ class LibraryViewModel @Inject constructor(
     fun selectTab(tab: LibraryTab) {
         _selectedTab.value = tab
         _selectedArtist.value = null
+        _playlistStack.value = emptyList()
         _selectedPlaylistId.value = null
         _selectedPlaylistName.value = null
     }
@@ -223,21 +276,52 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun selectPlaylist(playlistId: Long?, playlistName: String? = null) {
-        _selectedPlaylistId.value = playlistId
-        _selectedPlaylistName.value = playlistName
+        if (playlistId == null) {
+            _playlistStack.value = emptyList()
+            _selectedPlaylistId.value = null
+            _selectedPlaylistName.value = null
+        } else {
+            val currentStack = _playlistStack.value
+            val label = playlistName ?: "Playlist"
+            if (currentStack.lastOrNull()?.first != playlistId) {
+                _playlistStack.value = currentStack + (playlistId to label)
+            }
+            _selectedPlaylistId.value = playlistId
+            _selectedPlaylistName.value = label
+        }
     }
 
-    fun createPlaylist(name: String) {
+    fun navigateBackPlaylist() {
+        val currentStack = _playlistStack.value
+        if (currentStack.size <= 1) {
+            _playlistStack.value = emptyList()
+            _selectedPlaylistId.value = null
+            _selectedPlaylistName.value = null
+        } else {
+            val newStack = currentStack.dropLast(1)
+            _playlistStack.value = newStack
+            val top = newStack.last()
+            _selectedPlaylistId.value = top.first
+            _selectedPlaylistName.value = top.second
+        }
+    }
+
+    fun createPlaylist(name: String, parentPlaylistId: Long? = null) {
         viewModelScope.launch {
-            libraryRepository.createPlaylist(name)
+            libraryRepository.createPlaylist(name, parentPlaylistId)
+        }
+    }
+
+    fun mergePlaylists(sourcePlaylistId: Long, targetPlaylistId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            libraryRepository.mergePlaylists(sourcePlaylistId, targetPlaylistId)
         }
     }
 
     fun deletePlaylist(id: Long) {
         viewModelScope.launch {
             if (_selectedPlaylistId.value == id) {
-                _selectedPlaylistId.value = null
-                _selectedPlaylistName.value = null
+                navigateBackPlaylist()
             }
             libraryRepository.deletePlaylist(id)
         }
@@ -270,6 +354,31 @@ class LibraryViewModel @Inject constructor(
     fun removeSongFromPlaylist(playlistId: Long, trackId: String) {
         viewModelScope.launch {
             libraryRepository.removeSongFromPlaylist(playlistId, trackId)
+        }
+    }
+
+    fun removeSongsFromPlaylist(playlistId: Long, trackIds: List<String>) {
+        if (trackIds.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            for (trackId in trackIds) {
+                libraryRepository.removeSongFromPlaylist(playlistId, trackId)
+            }
+        }
+    }
+
+    fun saveTracks(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            libraryRepository.saveTracks(tracks)
+        }
+    }
+
+    fun removeTracksFromLibrary(trackIds: List<String>) {
+        if (trackIds.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            for (id in trackIds) {
+                libraryRepository.remove(id)
+            }
         }
     }
 
@@ -318,11 +427,12 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    fun playAll(tracks: List<Track>, startIndex: Int = 0) {
+    fun playAll(tracks: List<Track>, startIndex: Int = 0, shuffle: Boolean = false) {
         if (tracks.isEmpty()) return
-        val validIndex = startIndex.coerceIn(0, tracks.lastIndex)
+        val queue = if (shuffle) tracks.shuffled() else tracks
+        val validIndex = if (shuffle) 0 else startIndex.coerceIn(0, queue.lastIndex)
         viewModelScope.launch {
-            playerRepository.setQueue(tracks, validIndex)
+            playerRepository.setQueue(queue, validIndex)
         }
     }
 
@@ -526,7 +636,7 @@ class LibraryViewModel @Inject constructor(
                         if (videoId.isEmpty()) continue
 
                         val existing = trackDao.getTrackSync(videoId)
-                        val thumbUrl = trackDto.thumbnailUrl?.takeIf { it.isNotBlank() }
+                        val thumbUrl = trackDto.thumbnailUrl?.takeIf { isValidImageUrl(it) }
                             ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
                         if (existing == null) {
                             val newEntity = TrackEntity(
@@ -562,8 +672,15 @@ class LibraryViewModel @Inject constructor(
                     for (artistDto in fullBackup.artists) {
                         val artistName = artistDto.name.trim()
                         if (artistName.isEmpty()) continue
-                        val thumb = artistDto.artistThumbnailUrl?.takeIf { it.isNotBlank() }
-                            ?: artistDto.thumbnailUrl?.takeIf { it.isNotBlank() }
+                        val fallbackTrackThumb = fullBackup.tracks
+                            .firstOrNull { it.artist.trim().equals(artistName, ignoreCase = true) }
+                            ?.let { t ->
+                                t.thumbnailUrl?.takeIf { isValidImageUrl(it) }
+                                    ?: "https://i.ytimg.com/vi/${t.videoId.trim()}/hqdefault.jpg"
+                            }
+                        val thumb = artistDto.artistThumbnailUrl?.takeIf { isValidImageUrl(it) }
+                            ?: artistDto.thumbnailUrl?.takeIf { isValidImageUrl(it) }
+                            ?: fallbackTrackThumb
                         val existingArtist = artistDao.getArtistSync(artistName)
                         if (existingArtist == null) {
                             artistDao.insertArtist(
@@ -572,7 +689,7 @@ class LibraryViewModel @Inject constructor(
                                     thumbnailUrl = thumb
                                 )
                             )
-                        } else if (existingArtist.thumbnailUrl.isNullOrBlank() && !thumb.isNullOrBlank()) {
+                        } else if (!isValidImageUrl(existingArtist.thumbnailUrl) && !thumb.isNullOrBlank()) {
                             artistDao.insertArtist(
                                 existingArtist.copy(thumbnailUrl = thumb)
                             )

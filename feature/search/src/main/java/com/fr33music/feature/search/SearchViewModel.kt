@@ -337,6 +337,17 @@ class SearchViewModel @Inject constructor(
         }
     }
 
+    fun saveTracks(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                libraryRepository.saveTracks(tracks)
+            } catch (e: Exception) {
+                Log.e("SearchViewModel", "Error al guardar canciones masivas en favoritos: ${e.message}", e)
+            }
+        }
+    }
+
     fun createPlaylist(name: String) {
         viewModelScope.launch {
             try {

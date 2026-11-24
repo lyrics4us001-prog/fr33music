@@ -14,8 +14,8 @@ android {
         applicationId = "com.fr33music"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.2.0"
+        versionCode = 9
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

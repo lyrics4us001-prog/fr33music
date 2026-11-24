@@ -36,15 +36,19 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CallMerge
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ImportExport
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
@@ -54,6 +58,7 @@ import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -71,6 +76,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -89,6 +95,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.fr33music.core.database.dao.PlaylistWithSongCount
 import com.fr33music.core.database.entity.TrackEntity
+import com.fr33music.core.designsystem.component.SelectionBottomBar
+import com.fr33music.core.designsystem.component.SelectionTopBar
 import com.fr33music.core.designsystem.component.TrackRow
 import com.fr33music.core.designsystem.component.TrackThumbnail
 import com.fr33music.core.designsystem.theme.ColorBackground
@@ -113,7 +121,13 @@ fun LibraryScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var parentPlaylistIdForNewSub by remember { mutableStateOf<Long?>(null) }
+    var subPlaylistToMerge by remember { mutableStateOf<PlaylistWithSongCount?>(null) }
     var songForPlaylistDialog by remember { mutableStateOf<Track?>(null) }
+    var bulkTracksForPlaylistDialog by remember { mutableStateOf<List<Track>?>(null) }
+    var showBulkDeleteConfirm by remember { mutableStateOf(false) }
+    var selectedTracks by remember { mutableStateOf<Map<String, Track>>(emptyMap()) }
+    val isSelectionMode = selectedTracks.isNotEmpty()
     var artistToDelete by remember { mutableStateOf<String?>(null) }
     var artistToRename by remember { mutableStateOf<String?>(null) }
     var artistToMerge by remember { mutableStateOf<String?>(null) }
@@ -122,6 +136,10 @@ fun LibraryScreen(
     var playlistToRename by remember { mutableStateOf<Pair<Long, String>?>(null) }
     var trackToRename by remember { mutableStateOf<Track?>(null) }
     var artistForCoverChange by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(uiState.selectedTab, uiState.selectedArtist, uiState.selectedPlaylistId) {
+        selectedTracks = emptyMap()
+    }
 
     val context = LocalContext.current
 
@@ -185,18 +203,21 @@ fun LibraryScreen(
         }
     }
 
-    // Interceptar botón atrás físico para volver de la vista de detalle en lugar de cerrar la app
-    BackHandler(enabled = uiState.selectedArtist != null) {
+    // Interceptar botón atrás físico para volver de la vista de detalle o salir de selección
+    BackHandler(enabled = isSelectionMode) {
+        selectedTracks = emptyMap()
+    }
+    BackHandler(enabled = uiState.selectedArtist != null && !isSelectionMode) {
         viewModel.selectArtist(null)
     }
-    BackHandler(enabled = uiState.selectedPlaylistId != null) {
-        viewModel.selectPlaylist(null)
+    BackHandler(enabled = uiState.selectedPlaylistId != null && !isSelectionMode) {
+        viewModel.navigateBackPlaylist()
     }
 
     var isRootSearchVisible by remember { mutableStateOf(false) }
     var rootSearchQuery by remember { mutableStateOf("") }
 
-    BackHandler(enabled = isRootSearchVisible && uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
+    BackHandler(enabled = isRootSearchVisible && !isSelectionMode && uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
         isRootSearchVisible = false
         rootSearchQuery = ""
     }
@@ -206,6 +227,20 @@ fun LibraryScreen(
             .fillMaxSize()
             .background(ColorBackground)
     ) {
+        if (isSelectionMode && uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
+            SelectionTopBar(
+                selectedCount = selectedTracks.size,
+                onSelectAll = {
+                    val visible = if (rootSearchQuery.isBlank()) uiState.allSongs
+                    else uiState.allSongs.filter {
+                        it.title.contains(rootSearchQuery, ignoreCase = true) ||
+                        it.artistName.contains(rootSearchQuery, ignoreCase = true)
+                    }
+                    selectedTracks = visible.map { it.toDomain() }.associateBy { it.trackId }
+                },
+                onCancel = { selectedTracks = emptyMap() }
+            )
+        } else {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -289,8 +324,9 @@ fun LibraryScreen(
                 }
             }
         }
+        }
 
-        if (isRootSearchVisible && uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
+        if (isRootSearchVisible && !isSelectionMode && uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
             val placeholderText = when (uiState.selectedTab) {
                 LibraryTab.ARTISTS -> "Buscar artistas..."
                 LibraryTab.PLAYLISTS -> "Buscar playlists..."
@@ -347,30 +383,32 @@ fun LibraryScreen(
         }
 
         // Chips de las pestañas: Artistas, Playlists, Todas las canciones
-        LazyRow(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = Fr33Spacing.large),
-            horizontalArrangement = Arrangement.spacedBy(Fr33Spacing.small)
-        ) {
-            items(LibraryTab.entries) { tab ->
-                val selected = uiState.selectedTab == tab
-                FilterChip(
-                    selected = selected,
-                    onClick = { viewModel.selectTab(tab) },
-                    label = { Text(text = tab.title) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = ColorPrimary,
-                        selectedLabelColor = ColorTextPrimary,
-                        containerColor = ColorSurface,
-                        labelColor = ColorTextSecondary
-                    ),
-                    border = null,
-                    shape = RoundedCornerShape(Fr33Radius.large)
-                )
+        if (!isSelectionMode) {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = Fr33Spacing.large),
+                horizontalArrangement = Arrangement.spacedBy(Fr33Spacing.small)
+            ) {
+                items(LibraryTab.entries) { tab ->
+                    val selected = uiState.selectedTab == tab
+                    FilterChip(
+                        selected = selected,
+                        onClick = { viewModel.selectTab(tab) },
+                        label = { Text(text = tab.title) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = ColorPrimary,
+                            selectedLabelColor = ColorTextPrimary,
+                            containerColor = ColorSurface,
+                            labelColor = ColorTextSecondary
+                        ),
+                        border = null,
+                        shape = RoundedCornerShape(Fr33Radius.large)
+                    )
+                }
             }
-        }
 
-        Spacer(modifier = Modifier.height(Fr33Spacing.medium))
+            Spacer(modifier = Modifier.height(Fr33Spacing.medium))
+        }
 
         // Contenido según la pestaña seleccionada
         val context = LocalContext.current
@@ -445,7 +483,26 @@ fun LibraryScreen(
                             onToggleSave = { track, isSaved -> viewModel.toggleSave(track, isSaved) },
                             onDeleteDownload = { trackId -> viewModel.deleteDownload(trackId) },
                             onAddToPlaylist = { track -> songForPlaylistDialog = track },
-                            onRename = { track -> trackToRename = track }
+                            onRename = { track -> trackToRename = track },
+                            isSelectionMode = isSelectionMode,
+                            selectedTrackIds = selectedTracks.keys,
+                            onToggleSelection = { track ->
+                                selectedTracks = if (selectedTracks.containsKey(track.trackId)) {
+                                    selectedTracks - track.trackId
+                                } else {
+                                    selectedTracks + (track.trackId to track)
+                                }
+                            },
+                            onSelectAll = { list -> selectedTracks = list.associateBy { it.trackId } },
+                            onCancelSelection = { selectedTracks = emptyMap() },
+                            onBulkAddToPlaylist = { list -> bulkTracksForPlaylistDialog = list },
+                            onBulkAddToFavorites = {
+                                val list = selectedTracks.values.toList()
+                                viewModel.saveTracks(list)
+                                Toast.makeText(context, "${list.size} canciones añadidas a Favoritos", Toast.LENGTH_SHORT).show()
+                                selectedTracks = emptyMap()
+                            },
+                            onBulkDelete = { showBulkDeleteConfirm = true }
                         )
                     } else {
                         val filteredArtists = remember(uiState.artists, rootSearchQuery) {
@@ -501,14 +558,29 @@ fun LibraryScreen(
                         val playlistSongs = uiState.playlistSongs
                         PlaylistDetailView(
                             playlistName = uiState.selectedPlaylistName ?: "Playlist",
+                            isSubPlaylist = uiState.selectedPlaylistParentId != null,
+                            subPlaylists = uiState.subPlaylists,
                             tracks = playlistSongs,
+                            recursiveTracks = uiState.playlistRecursiveSongs,
                             sortOrder = uiState.sortOrder,
                             onSortOrderSelected = viewModel::setSortOrder,
-                            onBack = { viewModel.selectPlaylist(null) },
+                            onBack = { viewModel.navigateBackPlaylist() },
+                            onOpenSubPlaylist = { sub -> viewModel.selectPlaylist(sub.id, sub.name) },
+                            onCreateSubPlaylist = {
+                                parentPlaylistIdForNewSub = selectedPlaylistId
+                                showCreatePlaylistDialog = true
+                            },
+                            onRenameSubPlaylist = { id, name -> playlistToRename = Pair(id, name) },
+                            onChangeSubPlaylistCover = { id ->
+                                playlistForCoverChange = id
+                                playlistCoverPickerLauncher.launch("image/*")
+                            },
+                            onMergeSubPlaylist = { sub -> subPlaylistToMerge = sub },
+                            onDeleteSubPlaylist = { id -> viewModel.deletePlaylist(id) },
                             onExport = {
                                 val currentName = uiState.selectedPlaylistName ?: "Playlist"
                                 val safeName = currentName.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-                                playlistToExport = Pair(currentName, playlistSongs)
+                                playlistToExport = Pair(currentName, uiState.playlistRecursiveSongs)
                                 singlePlaylistExportLauncher.launch("$safeName.json")
                             },
                             onAutoRenameAll = onAutoRenameAll,
@@ -518,7 +590,7 @@ fun LibraryScreen(
                                 playlistCoverPickerLauncher.launch("image/*")
                             },
                             onPlayTrack = { track, list -> viewModel.playFromList(track, list) },
-                            onPlayAll = { tracks -> viewModel.playAll(tracks) },
+                            onPlayAll = { tracks, shuffle -> viewModel.playAll(tracks, shuffle = shuffle) },
                             onDownloadAll = onDownloadAll,
                             onToggleSave = { track, isSaved -> viewModel.toggleSave(track, isSaved) },
                             onDeleteDownload = { trackId -> viewModel.deleteDownload(trackId) },
@@ -526,7 +598,26 @@ fun LibraryScreen(
                             onRemoveFromPlaylist = { trackId ->
                                 viewModel.removeSongFromPlaylist(selectedPlaylistId, trackId)
                             },
-                            onRename = { track -> trackToRename = track }
+                            onRename = { track -> trackToRename = track },
+                            isSelectionMode = isSelectionMode,
+                            selectedTrackIds = selectedTracks.keys,
+                            onToggleSelection = { track ->
+                                selectedTracks = if (selectedTracks.containsKey(track.trackId)) {
+                                    selectedTracks - track.trackId
+                                } else {
+                                    selectedTracks + (track.trackId to track)
+                                }
+                            },
+                            onSelectAll = { list -> selectedTracks = list.associateBy { it.trackId } },
+                            onCancelSelection = { selectedTracks = emptyMap() },
+                            onBulkAddToPlaylist = { list -> bulkTracksForPlaylistDialog = list },
+                            onBulkAddToFavorites = {
+                                val list = selectedTracks.values.toList()
+                                viewModel.saveTracks(list)
+                                Toast.makeText(context, "${list.size} canciones añadidas a Favoritos", Toast.LENGTH_SHORT).show()
+                                selectedTracks = emptyMap()
+                            },
+                            onBulkDelete = { showBulkDeleteConfirm = true }
                         )
                     } else {
                         val filteredPlaylists = remember(uiState.playlists, rootSearchQuery) {
@@ -717,25 +808,42 @@ fun LibraryScreen(
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                                     items(filteredEntities, key = { it.id }) { trackEntity ->
                                     val domain = trackEntity.toDomain()
+                                    val isSelected = selectedTracks.containsKey(domain.trackId)
                                     TrackRow(
                                         track = domain,
-                                        onClick = { viewModel.playFromList(domain, allTracksDomain) },
-                                        onLongClick = { trackToRename = domain },
-                                        trailingContent = {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                IconButton(onClick = { songForPlaylistDialog = domain }) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.PlaylistAdd,
-                                                        contentDescription = "Añadir a playlist",
-                                                        tint = ColorTextSecondary
+                                        isSelectionMode = isSelectionMode,
+                                        isSelected = isSelected,
+                                        onClick = {
+                                            if (isSelectionMode) {
+                                                selectedTracks = if (isSelected) {
+                                                    selectedTracks - domain.trackId
+                                                } else {
+                                                    selectedTracks + (domain.trackId to domain)
+                                                }
+                                            } else {
+                                                viewModel.playFromList(domain, allTracksDomain)
+                                            }
+                                        },
+                                        onLongClick = {
+                                            selectedTracks = selectedTracks + (domain.trackId to domain)
+                                        },
+                                        trailingContent = if (isSelectionMode) null else {
+                                            {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    IconButton(onClick = { songForPlaylistDialog = domain }) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.PlaylistAdd,
+                                                            contentDescription = "Añadir a playlist",
+                                                            tint = ColorTextSecondary
+                                                        )
+                                                    }
+                                                    TrackKebabMenu(
+                                                        isSaved = trackEntity.isSaved,
+                                                        onToggleSave = { viewModel.toggleSave(domain, trackEntity.isSaved) },
+                                                        onRename = { trackToRename = domain },
+                                                        onDelete = { viewModel.deleteDownload(trackEntity.id) }
                                                     )
                                                 }
-                                                TrackKebabMenu(
-                                                    isSaved = trackEntity.isSaved,
-                                                    onToggleSave = { viewModel.toggleSave(domain, trackEntity.isSaved) },
-                                                    onRename = { trackToRename = domain },
-                                                    onDelete = { viewModel.deleteDownload(trackEntity.id) }
-                                                )
                                             }
                                         }
                                     )
@@ -756,16 +864,165 @@ fun LibraryScreen(
             }
             }
         }
+
+        if (isSelectionMode && uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
+            SelectionBottomBar(
+                onAddToPlaylist = { bulkTracksForPlaylistDialog = selectedTracks.values.toList() },
+                onAddToFavorites = {
+                    val list = selectedTracks.values.toList()
+                    viewModel.saveTracks(list)
+                    Toast.makeText(context, "${list.size} canciones añadidas a Favoritos", Toast.LENGTH_SHORT).show()
+                    selectedTracks = emptyMap()
+                },
+                onDelete = { showBulkDeleteConfirm = true }
+            )
+        }
     }
 
-    // Diálogo para crear nueva playlist
+    // Diálogo para crear nueva playlist o sub-playlist
     if (showCreatePlaylistDialog) {
         CreatePlaylistDialog(
-            onDismiss = { showCreatePlaylistDialog = false },
-            onCreate = { name ->
-                viewModel.createPlaylist(name)
+            title = if (parentPlaylistIdForNewSub != null) "Nueva Sub-playlist" else "Nueva Playlist",
+            onDismiss = {
                 showCreatePlaylistDialog = false
+                parentPlaylistIdForNewSub = null
+            },
+            onCreate = { name ->
+                viewModel.createPlaylist(name, parentPlaylistIdForNewSub)
+                showCreatePlaylistDialog = false
+                parentPlaylistIdForNewSub = null
             }
+        )
+    }
+
+    // Diálogo para añadir canciones seleccionadas en masa a una playlist
+    if (bulkTracksForPlaylistDialog != null) {
+        val targetTracks = bulkTracksForPlaylistDialog!!
+        AddToPlaylistDialog(
+            track = targetTracks.first(),
+            itemDescription = "${targetTracks.size} canciones seleccionadas",
+            playlists = uiState.allPlaylists,
+            onDismiss = { bulkTracksForPlaylistDialog = null },
+            onSelectPlaylist = { playlistId ->
+                viewModel.addSongsToPlaylist(playlistId, targetTracks)
+                Toast.makeText(
+                    context,
+                    "${targetTracks.size} canciones añadidas",
+                    Toast.LENGTH_SHORT
+                ).show()
+                bulkTracksForPlaylistDialog = null
+                selectedTracks = emptyMap()
+            },
+            onDeletePlaylist = { playlistId ->
+                viewModel.deletePlaylist(playlistId)
+            },
+            onCreateNewPlaylist = {
+                showCreatePlaylistDialog = true
+            }
+        )
+    }
+
+    // Diálogo de confirmación para eliminar canciones en masa
+    if (showBulkDeleteConfirm && selectedTracks.isNotEmpty()) {
+        val count = selectedTracks.size
+        val inPlaylistId = uiState.selectedPlaylistId
+        AlertDialog(
+            onDismissRequest = { showBulkDeleteConfirm = false },
+            title = {
+                Text(
+                    text = if (inPlaylistId != null) "Quitar de la playlist" else "Eliminar canciones",
+                    color = ColorTextPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = if (inPlaylistId != null) {
+                        "¿Quitar $count ${if (count == 1) "canción" else "canciones"} de esta playlist?"
+                    } else {
+                        "¿Eliminar $count ${if (count == 1) "canción" else "canciones"} de tu biblioteca y descargas?"
+                    },
+                    color = ColorTextSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val ids = selectedTracks.keys.toList()
+                        if (inPlaylistId != null) {
+                            viewModel.removeSongsFromPlaylist(inPlaylistId, ids)
+                        } else {
+                            viewModel.removeTracksFromLibrary(ids)
+                        }
+                        selectedTracks = emptyMap()
+                        showBulkDeleteConfirm = false
+                    }
+                ) {
+                    Text("Eliminar", color = ColorError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBulkDeleteConfirm = false }) {
+                    Text("Cancelar", color = ColorTextSecondary)
+                }
+            },
+            containerColor = ColorSurface
+        )
+    }
+
+    // Diálogo para combinar (Merge) una sub-playlist con otra playlist
+    if (subPlaylistToMerge != null) {
+        val sourceSub = subPlaylistToMerge!!
+        val availableTargets = uiState.allPlaylists.filter { it.id != sourceSub.id }
+        AlertDialog(
+            onDismissRequest = { subPlaylistToMerge = null },
+            title = { Text(text = "Combinar \"${sourceSub.name}\" con...", color = ColorTextPrimary) },
+            text = {
+                if (availableTargets.isEmpty()) {
+                    Text("No hay otras playlists disponibles para combinar.", color = ColorTextSecondary)
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                        items(availableTargets, key = { it.id }) { target ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.mergePlaylists(sourceSub.id, target.id)
+                                        Toast.makeText(
+                                            context,
+                                            "\"${sourceSub.name}\" combinada en \"${target.name}\"",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        subPlaylistToMerge = null
+                                    }
+                                    .padding(vertical = Fr33Spacing.medium, horizontal = Fr33Spacing.small),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (target.parentPlaylistId != null) Icons.Default.Folder else Icons.AutoMirrored.Filled.QueueMusic,
+                                    contentDescription = null,
+                                    tint = ColorPrimary
+                                )
+                                Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                                Column {
+                                    Text(text = target.name, color = ColorTextPrimary, style = Fr33Typography.bodyLarge)
+                                    Text(
+                                        text = "${target.songCount} ${if (target.songCount == 1) "canción" else "canciones"}",
+                                        color = ColorTextSecondary,
+                                        style = Fr33Typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { subPlaylistToMerge = null }) {
+                    Text("Cancelar", color = ColorTextSecondary)
+                }
+            },
+            containerColor = ColorSurface
         )
     }
 
@@ -912,7 +1169,7 @@ fun LibraryScreen(
         val targetTrack = songForPlaylistDialog!!
         AddToPlaylistDialog(
             track = targetTrack,
-            playlists = uiState.playlists,
+            playlists = uiState.allPlaylists,
             onDismiss = { songForPlaylistDialog = null },
             onSelectPlaylist = { playlistId ->
                 viewModel.addSongToPlaylist(playlistId, targetTrack)
@@ -1378,194 +1635,378 @@ private fun PlaylistRow(
 }
 
 @Composable
+private fun SubPlaylistRow(
+    subPlaylist: PlaylistWithSongCount,
+    onClick: () -> Unit,
+    onRename: () -> Unit,
+    onChangeCover: () -> Unit,
+    onMerge: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.small),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(modifier = Modifier.size(56.dp)) {
+            TrackThumbnail(
+                thumbnailUrl = subPlaylist.thumbnailUrl,
+                contentDescription = subPlaylist.name,
+                size = 56.dp,
+                shapeRadius = Fr33Radius.medium,
+                fallbackIcon = Icons.Default.Folder
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(22.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(ColorSurface),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Folder,
+                    contentDescription = "Sub-playlist",
+                    tint = ColorPrimary,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = subPlaylist.name,
+                style = Fr33Typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = ColorTextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "Carpeta • ${subPlaylist.songCount} ${if (subPlaylist.songCount == 1) "canción" else "canciones"}",
+                style = Fr33Typography.bodySmall,
+                color = ColorPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Box {
+            IconButton(onClick = { showMenu = true }) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "Opciones de sub-playlist",
+                    tint = ColorTextSecondary
+                )
+            }
+
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+                containerColor = ColorSurface
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Modificar", color = ColorTextPrimary) },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.Edit, contentDescription = null, tint = ColorTextSecondary)
+                    },
+                    onClick = {
+                        showMenu = false
+                        onRename()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Cambiar portada", color = ColorTextPrimary) },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.Image, contentDescription = null, tint = ColorTextSecondary)
+                    },
+                    onClick = {
+                        showMenu = false
+                        onChangeCover()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Combinar", color = ColorTextPrimary) },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.CallMerge, contentDescription = null, tint = ColorPrimary)
+                    },
+                    onClick = {
+                        showMenu = false
+                        onMerge()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Eliminar", color = ColorError) },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = ColorError)
+                    },
+                    onClick = {
+                        showMenu = false
+                        onDelete()
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PlaylistDetailView(
     playlistName: String,
+    isSubPlaylist: Boolean = false,
+    subPlaylists: List<PlaylistWithSongCount> = emptyList(),
     tracks: List<TrackEntity>,
+    recursiveTracks: List<TrackEntity> = tracks,
     sortOrder: LibrarySortOrder = LibrarySortOrder.RECENTLY_ADDED,
     onSortOrderSelected: (LibrarySortOrder) -> Unit = {},
     onBack: () -> Unit,
+    onOpenSubPlaylist: (PlaylistWithSongCount) -> Unit = {},
+    onCreateSubPlaylist: () -> Unit = {},
+    onRenameSubPlaylist: (Long, String) -> Unit = { _, _ -> },
+    onChangeSubPlaylistCover: (Long) -> Unit = {},
+    onMergeSubPlaylist: (PlaylistWithSongCount) -> Unit = {},
+    onDeleteSubPlaylist: (Long) -> Unit = {},
     onExport: () -> Unit = {},
     onAutoRenameAll: (List<TrackEntity>) -> Unit = {},
     onRefreshMetadata: (List<TrackEntity>) -> Unit = {},
     onChangeCover: () -> Unit = {},
     onPlayTrack: (Track, List<Track>) -> Unit,
-    onPlayAll: (List<Track>) -> Unit,
+    onPlayAll: (List<Track>, Boolean) -> Unit,
     onDownloadAll: (List<Track>) -> Unit = {},
     onToggleSave: (Track, Boolean) -> Unit,
     onDeleteDownload: (String) -> Unit,
     onAddToPlaylist: (Track) -> Unit = {},
     onRemoveFromPlaylist: (String) -> Unit,
-    onRename: (Track) -> Unit
+    onRename: (Track) -> Unit,
+    isSelectionMode: Boolean = false,
+    selectedTrackIds: Set<String> = emptySet(),
+    onToggleSelection: (Track) -> Unit = {},
+    onSelectAll: (List<Track>) -> Unit = {},
+    onCancelSelection: () -> Unit = {},
+    onBulkAddToPlaylist: (List<Track>) -> Unit = {},
+    onBulkAddToFavorites: () -> Unit = {},
+    onBulkDelete: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var isSearchVisible by remember { mutableStateOf(false) }
     var showTopMenu by remember { mutableStateOf(false) }
     var showSortDialog by remember { mutableStateOf(false) }
 
-    val filteredTracks = remember(tracks, searchQuery) {
+    val displaySubPlaylists = remember(subPlaylists, searchQuery) {
+        if (searchQuery.isBlank()) subPlaylists
+        else subPlaylists.filter { it.name.contains(searchQuery, ignoreCase = true) }
+    }
+
+    val displayTracks = remember(tracks, recursiveTracks, searchQuery) {
         if (searchQuery.isBlank()) tracks
-        else tracks.filter {
+        else recursiveTracks.filter {
             it.title.contains(searchQuery, ignoreCase = true) ||
             it.artistName.contains(searchQuery, ignoreCase = true)
         }
     }
-    val domainTracks = remember(filteredTracks) { filteredTracks.map { it.toDomain() } }
-    val allDomainTracks = remember(tracks) { tracks.map { it.toDomain() } }
+
+    val displayDomainTracks = remember(displayTracks) { displayTracks.map { it.toDomain() } }
+    val recursiveDomainTracks = remember(recursiveTracks) { recursiveTracks.map { it.toDomain() } }
+    val playSourceDomainTracks = remember(isSubPlaylist, tracks, recursiveTracks) {
+        (if (isSubPlaylist) tracks else recursiveTracks).map { it.toDomain() }
+    }
     val listState = rememberLazyListState()
 
-    BackHandler(enabled = isSearchVisible) {
+    BackHandler(enabled = isSearchVisible && !isSelectionMode) {
         isSearchVisible = false
         searchQuery = ""
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Fr33Spacing.small, vertical = Fr33Spacing.small),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Volver",
-                    tint = ColorTextPrimary
-                )
-            }
-
-            Text(
-                text = playlistName,
-                style = Fr33Typography.titleLarge,
-                color = ColorTextPrimary,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+        if (isSelectionMode) {
+            SelectionTopBar(
+                selectedCount = selectedTrackIds.size,
+                onSelectAll = { onSelectAll(displayDomainTracks) },
+                onCancel = onCancelSelection
             )
-
-            // Icono de búsqueda (Lupa) colocado justo a la izquierda de los 3 puntitos
-            IconButton(onClick = {
-                isSearchVisible = !isSearchVisible
-                if (!isSearchVisible) {
-                    searchQuery = ""
-                }
-            }) {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = "Buscar canciones",
-                    tint = if (isSearchVisible) ColorPrimary else ColorTextPrimary
-                )
-            }
-
-            // Menú de 3 puntos en barra superior
-            Box {
-                IconButton(onClick = { showTopMenu = true }) {
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Fr33Spacing.small, vertical = Fr33Spacing.small),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
                     Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "Más opciones",
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Volver",
                         tint = ColorTextPrimary
                     )
                 }
 
-                DropdownMenu(
-                    expanded = showTopMenu,
-                    onDismissRequest = { showTopMenu = false },
-                    containerColor = ColorSurface
-                ) {
-                    if (allDomainTracks.isNotEmpty()) {
+                Text(
+                    text = playlistName,
+                    style = Fr33Typography.titleLarge,
+                    color = ColorTextPrimary,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                // Botón minimalista circular rojo con Play blanco para reproducir toda la playlist (raíz + sub-playlists)
+                if (recursiveDomainTracks.isNotEmpty()) {
+                    Spacer(modifier = Modifier.width(Fr33Spacing.small))
+                    IconButton(
+                        onClick = { onPlayAll(recursiveDomainTracks, false) },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(ColorPrimary)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Reproducir toda la playlist",
+                            tint = androidx.compose.ui.graphics.Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(Fr33Spacing.extraSmall))
+                }
+
+                // Botón rápido para crear sub-playlist
+                IconButton(onClick = onCreateSubPlaylist) {
+                    Icon(
+                        imageVector = Icons.Default.CreateNewFolder,
+                        contentDescription = "Nueva sub-playlist",
+                        tint = ColorTextPrimary
+                    )
+                }
+
+                // Icono de búsqueda (Lupa) colocado justo a la izquierda de los 3 puntitos
+                IconButton(onClick = {
+                    isSearchVisible = !isSearchVisible
+                    if (!isSearchVisible) {
+                        searchQuery = ""
+                    }
+                }) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Buscar canciones",
+                        tint = if (isSearchVisible) ColorPrimary else ColorTextPrimary
+                    )
+                }
+
+                // Menú de 3 puntos en barra superior
+                Box {
+                    IconButton(onClick = { showTopMenu = true }) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Más opciones",
+                            tint = ColorTextPrimary
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded = showTopMenu,
+                        onDismissRequest = { showTopMenu = false },
+                        containerColor = ColorSurface
+                    ) {
+                        if (playSourceDomainTracks.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("Descargar todo", color = ColorTextPrimary) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Download,
+                                        contentDescription = null,
+                                        tint = ColorPrimary
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    onDownloadAll(playSourceDomainTracks)
+                                }
+                            )
+                        }
+
+                        if (tracks.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("Refrescar metadatos", color = ColorTextPrimary) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        tint = ColorPrimary
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    onRefreshMetadata(tracks)
+                                }
+                            )
+                        }
+
                         DropdownMenuItem(
-                            text = { Text("Descargar todo", color = ColorTextPrimary) },
+                            text = { Text("Exportar playlist", color = ColorTextPrimary) },
                             leadingIcon = {
                                 Icon(
-                                    imageVector = Icons.Default.Download,
+                                    imageVector = Icons.Default.Share,
                                     contentDescription = null,
-                                    tint = ColorPrimary
+                                    tint = ColorTextSecondary
                                 )
                             },
                             onClick = {
                                 showTopMenu = false
-                                onDownloadAll(allDomainTracks)
+                                onExport()
                             }
                         )
-                    }
 
-                    if (tracks.isNotEmpty()) {
                         DropdownMenuItem(
-                            text = { Text("Refrescar metadatos", color = ColorTextPrimary) },
+                            text = { Text("Organizar", color = ColorTextPrimary) },
                             leadingIcon = {
                                 Icon(
-                                    imageVector = Icons.Default.Refresh,
+                                    imageVector = Icons.Default.FilterList,
                                     contentDescription = null,
-                                    tint = ColorPrimary
+                                    tint = ColorTextSecondary
                                 )
                             },
                             onClick = {
                                 showTopMenu = false
-                                onRefreshMetadata(tracks)
+                                showSortDialog = true
                             }
                         )
-                    }
 
-                    DropdownMenuItem(
-                        text = { Text("Exportar playlist", color = ColorTextPrimary) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Default.Share,
-                                contentDescription = null,
-                                tint = ColorTextSecondary
+                        if (tracks.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("Nombres automáticos (IA)", color = ColorTextPrimary) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = null,
+                                        tint = ColorPrimary
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    onAutoRenameAll(tracks)
+                                }
                             )
-                        },
-                        onClick = {
-                            showTopMenu = false
-                            onExport()
                         }
-                    )
 
-                    DropdownMenuItem(
-                        text = { Text("Organizar", color = ColorTextPrimary) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Default.FilterList,
-                                contentDescription = null,
-                                tint = ColorTextSecondary
-                            )
-                        },
-                        onClick = {
-                            showTopMenu = false
-                            showSortDialog = true
-                        }
-                    )
-
-                    if (tracks.isNotEmpty()) {
                         DropdownMenuItem(
-                            text = { Text("Nombres automáticos (IA)", color = ColorTextPrimary) },
+                            text = { Text("Cambiar portada", color = ColorTextPrimary) },
                             leadingIcon = {
                                 Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
+                                    imageVector = Icons.Default.Image,
                                     contentDescription = null,
-                                    tint = ColorPrimary
+                                    tint = ColorTextSecondary
                                 )
                             },
                             onClick = {
                                 showTopMenu = false
-                                onAutoRenameAll(tracks)
+                                onChangeCover()
                             }
                         )
                     }
-
-                    DropdownMenuItem(
-                        text = { Text("Cambiar portada", color = ColorTextPrimary) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Default.Image,
-                                contentDescription = null,
-                                tint = ColorTextSecondary
-                            )
-                        },
-                        onClick = {
-                            showTopMenu = false
-                            onChangeCover()
-                        }
-                    )
                 }
             }
         }
@@ -1631,21 +2072,24 @@ private fun PlaylistDetailView(
             )
         }
 
-        if (tracks.isEmpty()) {
-            LibraryEmptyView(
-                icon = Icons.Default.MusicNote,
-                title = "Playlist vacía",
-                subtitle = "Usa el icono '+' en cualquier canción para añadirla a esta lista."
-            )
-        } else if (filteredTracks.isEmpty()) {
+        if (tracks.isEmpty() && subPlaylists.isEmpty()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                LibraryEmptyView(
+                    icon = Icons.Default.MusicNote,
+                    title = "Playlist vacía",
+                    subtitle = "Usa '+' para añadir canciones o crea una sub-playlist con el icono de carpeta."
+                )
+            }
+        } else if (displaySubPlaylists.isEmpty() && displayTracks.isEmpty()) {
             Box(
                 modifier = Modifier
+                    .weight(1f)
                     .fillMaxWidth()
                     .padding(Fr33Spacing.extraLarge),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "No se encontraron canciones que coincidan con la búsqueda",
+                    text = "No se encontraron resultados que coincidan con la búsqueda",
                     style = Fr33Typography.bodyMedium,
                     color = ColorTextTertiary,
                     textAlign = TextAlign.Center
@@ -1654,24 +2098,59 @@ private fun PlaylistDetailView(
         } else {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
             ) {
-                items(filteredTracks, key = { it.id }) { trackEntity ->
+                if (displaySubPlaylists.isNotEmpty()) {
+                    items(displaySubPlaylists, key = { "sub_${it.id}" }) { sub ->
+                        SubPlaylistRow(
+                            subPlaylist = sub,
+                            onClick = {
+                                if (!isSelectionMode) {
+                                    onOpenSubPlaylist(sub)
+                                }
+                            },
+                            onRename = { onRenameSubPlaylist(sub.id, sub.name) },
+                            onChangeCover = { onChangeSubPlaylistCover(sub.id) },
+                            onMerge = { onMergeSubPlaylist(sub) },
+                            onDelete = { onDeleteSubPlaylist(sub.id) }
+                        )
+                        HorizontalDivider(
+                            color = ColorDivider,
+                            thickness = 0.5.dp,
+                            modifier = Modifier.padding(start = 72.dp)
+                        )
+                    }
+                }
+
+                items(displayTracks, key = { it.id }) { trackEntity ->
                     val domain = trackEntity.toDomain()
+                    val isSelected = selectedTrackIds.contains(domain.trackId)
                     TrackRow(
                         track = domain,
-                        onClick = { onPlayTrack(domain, domainTracks) },
-                        onLongClick = { onRename(domain) },
-                        trailingContent = {
-                            TrackKebabMenu(
-                                isSaved = trackEntity.isSaved,
-                                onToggleSave = { onToggleSave(domain, trackEntity.isSaved) },
-                                onRename = { onRename(domain) },
-                                onDelete = { onDeleteDownload(trackEntity.id) },
-                                onAddToPlaylist = { onAddToPlaylist(domain) },
-                                addToPlaylistLabel = "Añadir a otra Playlist",
-                                onRemoveFromPlaylist = { onRemoveFromPlaylist(trackEntity.id) }
-                            )
+                        isSelectionMode = isSelectionMode,
+                        isSelected = isSelected,
+                        onClick = {
+                            if (isSelectionMode) {
+                                onToggleSelection(domain)
+                            } else {
+                                onPlayTrack(domain, displayDomainTracks)
+                            }
+                        },
+                        onLongClick = { onToggleSelection(domain) },
+                        trailingContent = if (isSelectionMode) null else {
+                            {
+                                TrackKebabMenu(
+                                    isSaved = trackEntity.isSaved,
+                                    onToggleSave = { onToggleSave(domain, trackEntity.isSaved) },
+                                    onRename = { onRename(domain) },
+                                    onDelete = { onDeleteDownload(trackEntity.id) },
+                                    onAddToPlaylist = { onAddToPlaylist(domain) },
+                                    addToPlaylistLabel = "Añadir a otra Playlist",
+                                    onRemoveFromPlaylist = { onRemoveFromPlaylist(trackEntity.id) }
+                                )
+                            }
                         }
                     )
                     HorizontalDivider(
@@ -1682,9 +2161,20 @@ private fun PlaylistDetailView(
                 }
 
                 item {
-                    ListSummaryFooter(tracks = filteredTracks)
+                    ListSummaryFooter(tracks = displayTracks)
                 }
             }
+        }
+
+        if (isSelectionMode) {
+            SelectionBottomBar(
+                onAddToPlaylist = {
+                    val selected = displayDomainTracks.filter { selectedTrackIds.contains(it.trackId) }
+                    onBulkAddToPlaylist(selected)
+                },
+                onAddToFavorites = onBulkAddToFavorites,
+                onDelete = onBulkDelete
+            )
         }
     }
 }
@@ -1709,7 +2199,7 @@ private fun ArtistRow(
     ) {
         TrackThumbnail(
             thumbnailUrl = artist.thumbnailUrl,
-            trackId = null,
+            trackId = artist.firstTrackId,
             contentDescription = artist.name,
             size = 56.dp,
             isCircular = true,
@@ -1883,7 +2373,15 @@ private fun ArtistDetailView(
     onToggleSave: (Track, Boolean) -> Unit,
     onDeleteDownload: (String) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
-    onRename: (Track) -> Unit
+    onRename: (Track) -> Unit,
+    isSelectionMode: Boolean = false,
+    selectedTrackIds: Set<String> = emptySet(),
+    onToggleSelection: (Track) -> Unit = {},
+    onSelectAll: (List<Track>) -> Unit = {},
+    onCancelSelection: () -> Unit = {},
+    onBulkAddToPlaylist: (List<Track>) -> Unit = {},
+    onBulkAddToFavorites: () -> Unit = {},
+    onBulkDelete: () -> Unit = {}
 ) {
     val domainTracks = tracks.map { it.toDomain() }
     val listState = rememberLazyListState()
@@ -1902,12 +2400,19 @@ private fun ArtistDetailView(
     }
     val filteredDomainTracks = remember(filteredTracks) { filteredTracks.map { it.toDomain() } }
 
-    BackHandler(enabled = isSearchVisible) {
+    BackHandler(enabled = isSearchVisible && !isSelectionMode) {
         isSearchVisible = false
         searchQuery = ""
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        if (isSelectionMode) {
+            SelectionTopBar(
+                selectedCount = selectedTrackIds.size,
+                onSelectAll = { onSelectAll(filteredDomainTracks) },
+                onCancel = onCancelSelection
+            )
+        } else {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2052,8 +2557,9 @@ private fun ArtistDetailView(
                 }
             }
         }
+        }
 
-        if (isSearchVisible) {
+        if (isSearchVisible && !isSelectionMode) {
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
@@ -2112,7 +2618,9 @@ private fun ArtistDetailView(
 
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
         ) {
             if (filteredTracks.isEmpty() && searchQuery.isNotBlank()) {
                 item {
@@ -2133,24 +2641,35 @@ private fun ArtistDetailView(
             } else {
                 items(filteredTracks, key = { it.id }) { trackEntity ->
                     val domain = trackEntity.toDomain()
+                    val isSelected = selectedTrackIds.contains(domain.trackId)
                     TrackRow(
                         track = domain,
-                        onClick = { onPlayTrack(domain, filteredDomainTracks) },
-                        onLongClick = { onRename(domain) },
-                        trailingContent = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { onToggleSave(domain, trackEntity.isSaved) }) {
-                                    Icon(
-                                        imageVector = if (trackEntity.isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                        contentDescription = if (trackEntity.isSaved) "Quitar de favoritos" else "Guardar en favoritos",
-                                        tint = if (trackEntity.isSaved) ColorPrimary else ColorTextTertiary
+                        isSelectionMode = isSelectionMode,
+                        isSelected = isSelected,
+                        onClick = {
+                            if (isSelectionMode) {
+                                onToggleSelection(domain)
+                            } else {
+                                onPlayTrack(domain, filteredDomainTracks)
+                            }
+                        },
+                        onLongClick = { onToggleSelection(domain) },
+                        trailingContent = if (isSelectionMode) null else {
+                            {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { onToggleSave(domain, trackEntity.isSaved) }) {
+                                        Icon(
+                                            imageVector = if (trackEntity.isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                            contentDescription = if (trackEntity.isSaved) "Quitar de favoritos" else "Guardar en favoritos",
+                                            tint = if (trackEntity.isSaved) ColorPrimary else ColorTextTertiary
+                                        )
+                                    }
+                                    TrackKebabMenu(
+                                        onRename = { onRename(domain) },
+                                        onDelete = { onDeleteDownload(trackEntity.id) },
+                                        onAddToPlaylist = { onAddToPlaylist(domain) }
                                     )
                                 }
-                                TrackKebabMenu(
-                                    onRename = { onRename(domain) },
-                                    onDelete = { onDeleteDownload(trackEntity.id) },
-                                    onAddToPlaylist = { onAddToPlaylist(domain) }
-                                )
                             }
                         }
                     )
@@ -2166,11 +2685,23 @@ private fun ArtistDetailView(
                 }
             }
         }
+
+        if (isSelectionMode) {
+            SelectionBottomBar(
+                onAddToPlaylist = {
+                    val selected = filteredDomainTracks.filter { selectedTrackIds.contains(it.trackId) }
+                    onBulkAddToPlaylist(selected)
+                },
+                onAddToFavorites = onBulkAddToFavorites,
+                onDelete = onBulkDelete
+            )
+        }
     }
 }
 
 @Composable
 private fun CreatePlaylistDialog(
+    title: String = "Nueva Playlist",
     onDismiss: () -> Unit,
     onCreate: (String) -> Unit
 ) {
@@ -2178,7 +2709,7 @@ private fun CreatePlaylistDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = "Nueva Playlist", color = ColorTextPrimary) },
+        title = { Text(text = title, color = ColorTextPrimary) },
         text = {
             OutlinedTextField(
                 value = name,
@@ -2213,7 +2744,8 @@ private fun AddToPlaylistDialog(
     onDismiss: () -> Unit,
     onSelectPlaylist: (Long) -> Unit,
     onDeletePlaylist: (Long) -> Unit,
-    onCreateNewPlaylist: () -> Unit
+    onCreateNewPlaylist: () -> Unit,
+    itemDescription: String? = null
 ) {
     var playlistToDelete by remember { mutableStateOf<PlaylistWithSongCount?>(null) }
 
@@ -2254,7 +2786,7 @@ private fun AddToPlaylistDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "${track.title} - ${track.artistName}",
+                    text = itemDescription ?: "${track.title} - ${track.artistName}",
                     style = Fr33Typography.bodySmall,
                     color = ColorTextSecondary,
                     maxLines = 1,
@@ -2275,37 +2807,107 @@ private fun AddToPlaylistDialog(
                         color = ColorTextTertiary,
                         modifier = Modifier.padding(bottom = Fr33Spacing.small)
                     )
+                    val rootPlaylists = remember(playlists) { playlists.filter { it.parentPlaylistId == null } }
+                    val subPlaylistsByParent = remember(playlists) {
+                        playlists.filter { it.parentPlaylistId != null }.groupBy { it.parentPlaylistId }
+                    }
+                    var expandedPlaylistIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+
                     LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                        items(playlists, key = { it.id }) { playlist ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(Fr33Radius.small))
-                                    .combinedClickable(
-                                        onClick = { onSelectPlaylist(playlist.id) },
-                                        onLongClick = { playlistToDelete = playlist }
+                        items(rootPlaylists, key = { it.id }) { playlist ->
+                            val children = subPlaylistsByParent[playlist.id].orEmpty()
+                            val isExpanded = expandedPlaylistIds.contains(playlist.id)
+
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(Fr33Radius.small))
+                                        .combinedClickable(
+                                            onClick = { onSelectPlaylist(playlist.id) },
+                                            onLongClick = { playlistToDelete = playlist }
+                                        )
+                                        .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.QueueMusic,
+                                        contentDescription = null,
+                                        tint = ColorPrimary,
+                                        modifier = Modifier.size(24.dp)
                                     )
-                                    .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.QueueMusic,
-                                    contentDescription = null,
-                                    tint = ColorPrimary,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.width(Fr33Spacing.medium))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = playlist.name,
-                                        style = Fr33Typography.titleMedium,
-                                        color = ColorTextPrimary
-                                    )
-                                    Text(
-                                        text = "${playlist.songCount} canciones",
-                                        style = Fr33Typography.bodySmall,
-                                        color = ColorTextSecondary
-                                    )
+                                    Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = playlist.name,
+                                            style = Fr33Typography.titleMedium,
+                                            color = ColorTextPrimary
+                                        )
+                                        val subText = if (children.isNotEmpty()) {
+                                            "${playlist.songCount} canciones • ${children.size} ${if (children.size == 1) "sub-playlist" else "sub-playlists"}"
+                                        } else {
+                                            "${playlist.songCount} canciones"
+                                        }
+                                        Text(
+                                            text = subText,
+                                            style = Fr33Typography.bodySmall,
+                                            color = ColorTextSecondary
+                                        )
+                                    }
+                                    if (children.isNotEmpty()) {
+                                        IconButton(
+                                            onClick = {
+                                                expandedPlaylistIds = if (isExpanded) {
+                                                    expandedPlaylistIds - playlist.id
+                                                } else {
+                                                    expandedPlaylistIds + playlist.id
+                                                }
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                                contentDescription = if (isExpanded) "Contraer" else "Expandir",
+                                                tint = ColorPrimary
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (isExpanded && children.isNotEmpty()) {
+                                    children.forEach { sub ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(start = 28.dp)
+                                                .clip(RoundedCornerShape(Fr33Radius.small))
+                                                .combinedClickable(
+                                                    onClick = { onSelectPlaylist(sub.id) },
+                                                    onLongClick = { playlistToDelete = sub }
+                                                )
+                                                .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Folder,
+                                                contentDescription = null,
+                                                tint = ColorPrimary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = sub.name,
+                                                    style = Fr33Typography.bodyLarge,
+                                                    color = ColorTextPrimary
+                                                )
+                                                Text(
+                                                    text = "${sub.songCount} canciones",
+                                                    style = Fr33Typography.bodySmall,
+                                                    color = ColorTextSecondary
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -42,7 +42,9 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -1028,37 +1030,107 @@ private fun AddToPlaylistDialog(
                         color = ColorTextTertiary,
                         modifier = Modifier.padding(bottom = Fr33Spacing.small)
                     )
+                    val rootPlaylists = remember(playlists) { playlists.filter { it.parentPlaylistId == null } }
+                    val subPlaylistsByParent = remember(playlists) {
+                        playlists.filter { it.parentPlaylistId != null }.groupBy { it.parentPlaylistId }
+                    }
+                    var expandedPlaylistIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+
                     LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                        items(playlists, key = { it.id }) { playlist ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(Fr33Radius.small))
-                                    .combinedClickable(
-                                        onClick = { onSelectPlaylist(playlist.id) },
-                                        onLongClick = { playlistToDelete = playlist }
+                        items(rootPlaylists, key = { it.id }) { playlist ->
+                            val children = subPlaylistsByParent[playlist.id].orEmpty()
+                            val isExpanded = expandedPlaylistIds.contains(playlist.id)
+
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(Fr33Radius.small))
+                                        .combinedClickable(
+                                            onClick = { onSelectPlaylist(playlist.id) },
+                                            onLongClick = { playlistToDelete = playlist }
+                                        )
+                                        .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.QueueMusic,
+                                        contentDescription = null,
+                                        tint = ColorPrimary,
+                                        modifier = Modifier.size(24.dp)
                                     )
-                                    .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.QueueMusic,
-                                    contentDescription = null,
-                                    tint = ColorPrimary,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.width(Fr33Spacing.medium))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = playlist.name,
-                                        style = Fr33Typography.titleMedium,
-                                        color = ColorTextPrimary
-                                    )
-                                    Text(
-                                        text = "${playlist.songCount} canciones",
-                                        style = Fr33Typography.bodySmall,
-                                        color = ColorTextSecondary
-                                    )
+                                    Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = playlist.name,
+                                            style = Fr33Typography.titleMedium,
+                                            color = ColorTextPrimary
+                                        )
+                                        val subText = if (children.isNotEmpty()) {
+                                            "${playlist.songCount} canciones • ${children.size} ${if (children.size == 1) "sub-playlist" else "sub-playlists"}"
+                                        } else {
+                                            "${playlist.songCount} canciones"
+                                        }
+                                        Text(
+                                            text = subText,
+                                            style = Fr33Typography.bodySmall,
+                                            color = ColorTextSecondary
+                                        )
+                                    }
+                                    if (children.isNotEmpty()) {
+                                        IconButton(
+                                            onClick = {
+                                                expandedPlaylistIds = if (isExpanded) {
+                                                    expandedPlaylistIds - playlist.id
+                                                } else {
+                                                    expandedPlaylistIds + playlist.id
+                                                }
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                                contentDescription = if (isExpanded) "Contraer" else "Expandir",
+                                                tint = ColorPrimary
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (isExpanded && children.isNotEmpty()) {
+                                    children.forEach { sub ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(start = 28.dp)
+                                                .clip(RoundedCornerShape(Fr33Radius.small))
+                                                .combinedClickable(
+                                                    onClick = { onSelectPlaylist(sub.id) },
+                                                    onLongClick = { playlistToDelete = sub }
+                                                )
+                                                .padding(vertical = Fr33Spacing.small, horizontal = Fr33Spacing.extraSmall),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Folder,
+                                                contentDescription = null,
+                                                tint = ColorPrimary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = sub.name,
+                                                    style = Fr33Typography.bodyLarge,
+                                                    color = ColorTextPrimary
+                                                )
+                                                Text(
+                                                    text = "${sub.songCount} canciones",
+                                                    style = Fr33Typography.bodySmall,
+                                                    color = ColorTextSecondary
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

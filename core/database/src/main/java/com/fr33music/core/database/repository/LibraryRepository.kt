@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.Flow
 interface LibraryRepository {
     suspend fun toggleSave(track: Track, isCurrentlySaved: Boolean)
     suspend fun save(track: Track)
+    suspend fun saveTracks(tracks: List<Track>)
     suspend fun removeFromFavorites(trackId: String)
     suspend fun deleteArtist(artistName: String)
     suspend fun renameArtist(oldName: String, newName: String)
@@ -20,9 +21,13 @@ interface LibraryRepository {
 
     // Playlists
     fun getPlaylists(): Flow<List<PlaylistWithSongCount>>
+    fun getSubPlaylists(parentPlaylistId: Long): Flow<List<PlaylistWithSongCount>>
     fun getSongsForPlaylist(playlistId: Long): Flow<List<TrackEntity>>
-    suspend fun createPlaylist(name: String): Long
+    fun getSongsForPlaylistRecursive(playlistId: Long): Flow<List<TrackEntity>>
+    suspend fun getSongsForPlaylistRecursiveSync(playlistId: Long): List<TrackEntity>
+    suspend fun createPlaylist(name: String, parentPlaylistId: Long? = null): Long
     suspend fun renamePlaylist(playlistId: Long, newName: String)
+    suspend fun mergePlaylists(sourcePlaylistId: Long, targetPlaylistId: Long)
     suspend fun deletePlaylist(id: Long)
     suspend fun addSongToPlaylist(playlistId: Long, track: Track)
     suspend fun addSongsToPlaylist(playlistId: Long, tracks: List<Track>)

@@ -32,7 +32,7 @@ import com.fr33music.core.database.entity.TrackEntity
         PlaylistEntity::class,
         PlaylistSongCrossRef::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
