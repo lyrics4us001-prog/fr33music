@@ -119,6 +119,18 @@ class SearchViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
+    val recentSearches: StateFlow<List<String>> = searchHistoryDao.getRecentSearches(3)
+        .map { list -> list.map { it.query } }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    private val _suggestions = MutableStateFlow<List<String>>(emptyList())
+    val suggestions: StateFlow<List<String>> = _suggestions.asStateFlow()
+    private var suggestionsJob: Job? = null
+
     fun addSongToPlaylist(playlistId: Long, track: Track) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -164,22 +176,38 @@ class SearchViewModel @Inject constructor(
 
     fun onQueryChange(newQuery: String) {
         _query.value = newQuery
-        if (newQuery.trim().isEmpty()) {
+        val trimmed = newQuery.trim()
+        if (trimmed.isEmpty()) {
             searchJob?.cancel()
+            suggestionsJob?.cancel()
+            _suggestions.value = emptyList()
             _uiState.value = SearchUiState.Idle
+        } else {
+            suggestionsJob?.cancel()
+            suggestionsJob = viewModelScope.launch {
+                kotlinx.coroutines.delay(200)
+                val res = searchSource.getSuggestions(trimmed)
+                _suggestions.value = res.getOrElse { emptyList() }
+            }
         }
     }
 
-    fun search() {
+    fun search(customQuery: String? = null) {
+        if (customQuery != null) {
+            _query.value = customQuery
+        }
         val currentQuery = _query.value.trim()
         if (currentQuery.isEmpty()) {
             _uiState.value = SearchUiState.Idle
             return
         }
 
-        // Registrar búsqueda en historial para recomendaciones
+        _suggestions.value = emptyList()
+
+        // Registrar búsqueda en historial para recomendaciones (mantener solo las 3 más recientes)
         viewModelScope.launch {
             searchHistoryDao.insertSearch(SearchHistoryEntity(query = currentQuery))
+            searchHistoryDao.trimHistory(3)
         }
 
         searchJob?.cancel()
@@ -308,6 +336,26 @@ class SearchViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Log.e("SearchViewModel", "Error en downloadAll: ${e.message}", e)
+            }
+        }
+    }
+
+    fun deleteSearchHistoryItem(itemQuery: String) {
+        viewModelScope.launch {
+            try {
+                searchHistoryDao.deleteSearch(itemQuery)
+            } catch (e: Exception) {
+                Log.e("SearchViewModel", "Error en deleteSearchHistoryItem: ${e.message}", e)
+            }
+        }
+    }
+
+    fun clearSearchHistory() {
+        viewModelScope.launch {
+            try {
+                searchHistoryDao.clearHistory()
+            } catch (e: Exception) {
+                Log.e("SearchViewModel", "Error en clearSearchHistory: ${e.message}", e)
             }
         }
     }

@@ -17,8 +17,44 @@ interface TrackDao {
     @Query("SELECT * FROM tracks WHERE isDownloaded = 1 ORDER BY timestamp DESC")
     fun getDownloadedTracks(): Flow<List<TrackEntity>>
 
-    @Query("SELECT * FROM tracks ORDER BY timestamp DESC")
+    @Query("""
+        SELECT DISTINCT * FROM tracks 
+        WHERE isSaved = 1 
+           OR isDownloaded = 1 
+           OR id IN (SELECT trackId FROM playlist_songs) 
+        ORDER BY title ASC
+    """)
     fun getAllTracks(): Flow<List<TrackEntity>>
+
+    @Query("""
+        SELECT DISTINCT * FROM tracks 
+        WHERE isSaved = 1 
+           OR isDownloaded = 1 
+           OR id IN (SELECT trackId FROM playlist_songs) 
+        ORDER BY title ASC
+    """)
+    suspend fun getAllTracksSync(): List<TrackEntity>
+
+    @Query("""
+        SELECT DISTINCT * FROM tracks 
+        WHERE isSaved = 1 
+           OR isDownloaded = 1 
+           OR id IN (SELECT trackId FROM playlist_songs) 
+        ORDER BY title ASC
+    """)
+    fun getAllSongs(): Flow<List<TrackEntity>>
+
+    @Query("""
+        SELECT DISTINCT * FROM tracks 
+        WHERE isSaved = 1 
+           OR isDownloaded = 1 
+           OR id IN (SELECT trackId FROM playlist_songs) 
+        ORDER BY title ASC
+    """)
+    suspend fun getAllSongsSync(): List<TrackEntity>
+
+    @Query("SELECT * FROM tracks WHERE isSaved = 1 ORDER BY timestamp DESC")
+    suspend fun getSavedTracksSync(): List<TrackEntity>
 
     @Query("SELECT * FROM tracks WHERE id = :id LIMIT 1")
     fun getTrack(id: String): Flow<TrackEntity?>
@@ -41,6 +77,9 @@ interface TrackDao {
     @Update
     suspend fun updateTrack(track: TrackEntity)
 
+    @Query("UPDATE tracks SET title = :title, artistName = :artistName WHERE id = :id")
+    suspend fun updateTrackMetadata(id: String, title: String, artistName: String)
+
     @Query("UPDATE tracks SET isSaved = :isSaved, timestamp = :timestamp WHERE id = :id")
     suspend fun setSaved(id: String, isSaved: Boolean, timestamp: Long = System.currentTimeMillis())
 
@@ -56,13 +95,16 @@ interface TrackDao {
     @Query("SELECT * FROM tracks WHERE artistName = :artistName")
     suspend fun getTracksByArtistSync(artistName: String): List<TrackEntity>
 
+    @Query("UPDATE tracks SET artistName = :newName WHERE artistName = :oldName")
+    suspend fun updateArtistName(oldName: String, newName: String)
+
     @Query("DELETE FROM tracks WHERE artistName = :artistName")
     suspend fun deleteTracksByArtist(artistName: String)
 
-    @Query("SELECT DISTINCT artistName FROM tracks WHERE isSaved = 1 ORDER BY artistName ASC")
+    @Query("SELECT DISTINCT artistName FROM tracks ORDER BY artistName ASC")
     fun getDistinctArtists(): Flow<List<String>>
 
-    @Query("SELECT * FROM tracks WHERE artistName = :artistName AND isSaved = 1 ORDER BY title ASC")
+    @Query("SELECT * FROM tracks WHERE artistName = :artistName ORDER BY title ASC")
     fun getTracksByArtist(artistName: String): Flow<List<TrackEntity>>
 
     @Query("SELECT DISTINCT albumName FROM tracks WHERE albumName IS NOT NULL AND (isSaved = 1 OR isDownloaded = 1) ORDER BY albumName ASC")
@@ -86,6 +128,9 @@ interface TrackDao {
 
     @Query("SELECT * FROM tracks WHERE COALESCE(NULLIF(albumName, ''), 'Sencillos') = :albumName AND artistName = :artistName AND (isSaved = 1 OR isDownloaded = 1) ORDER BY title ASC")
     fun getTracksByAlbumAndArtist(albumName: String, artistName: String): Flow<List<TrackEntity>>
+
+    @Query("UPDATE tracks SET title = 'Desconocido' WHERE title LIKE 'Pista %'")
+    suspend fun sanitizeLegacyTrackTitles()
 }
 
 data class AlbumSummary(

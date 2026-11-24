@@ -175,6 +175,40 @@ class NewPipeStreamResolver(
         }
     }
 
+    override suspend fun resolveMetadata(videoId: String): Result<ResolvedMetadata> = withContext(Dispatchers.IO) {
+        try {
+            val cleanId = extractVideoId(videoId)
+            val videoUrl = if (cleanId.startsWith("http")) {
+                cleanId
+            } else {
+                "https://www.youtube.com/watch?v=$cleanId"
+            }
+            Log.d("StreamResolver", "Obteniendo metadatos actualizados desde NewPipe para: $videoUrl")
+            val streamInfo = StreamInfo.getInfo(ServiceList.YouTube, videoUrl)
+            val title = streamInfo.name?.takeIf { it.isNotBlank() && !it.startsWith("Pista ") } ?: "Desconocido"
+            val artist = streamInfo.uploaderName?.takeIf { it.isNotBlank() } ?: "Artista Desconocido"
+            val durationSec = streamInfo.duration
+            val durationMs = if (durationSec > 0) durationSec * 1000L else 0L
+            val rawThumb = try {
+                streamInfo.thumbnails?.maxByOrNull { it.height }?.url
+                    ?: streamInfo.thumbnails?.firstOrNull()?.url
+            } catch (_: Exception) { null }
+            val thumb = Track.upgradeThumbnail(rawThumb)
+
+            Result.success(
+                ResolvedMetadata(
+                    title = title,
+                    artistName = artist,
+                    durationMs = durationMs,
+                    thumbnailUrl = thumb
+                )
+            )
+        } catch (e: Exception) {
+            Log.w("StreamResolver", "Error al resolver metadatos para $videoId: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
     private fun extractVideoId(urlOrId: String): String {
         return when {
             urlOrId.contains("v=") -> urlOrId.substringAfter("v=").substringBefore("&")

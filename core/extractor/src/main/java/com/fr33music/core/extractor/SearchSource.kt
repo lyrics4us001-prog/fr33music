@@ -22,4 +22,8 @@ interface SearchSource {
     suspend fun getAlbumTracks(
         album: AlbumCard
     ): Result<List<Track>>
+
+    suspend fun getSuggestions(
+        query: String
+    ): Result<List<String>>
 }

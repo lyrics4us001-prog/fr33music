@@ -8,14 +8,21 @@ import kotlinx.coroutines.flow.Flow
 interface LibraryRepository {
     suspend fun toggleSave(track: Track, isCurrentlySaved: Boolean)
     suspend fun save(track: Track)
+    suspend fun removeFromFavorites(trackId: String)
     suspend fun deleteArtist(artistName: String)
+    suspend fun renameArtist(oldName: String, newName: String)
+    suspend fun mergeArtists(sourceArtist: String, targetArtist: String)
+    suspend fun updateArtistThumbnail(artistName: String, thumbnailUrl: String)
+    suspend fun updatePlaylistThumbnail(playlistId: Long, thumbnailUrl: String)
     suspend fun deleteDownload(trackId: String)
     suspend fun remove(trackId: String)
+    suspend fun updateTrackMetadata(trackId: String, title: String, artistName: String)
 
     // Playlists
     fun getPlaylists(): Flow<List<PlaylistWithSongCount>>
     fun getSongsForPlaylist(playlistId: Long): Flow<List<TrackEntity>>
     suspend fun createPlaylist(name: String): Long
+    suspend fun renamePlaylist(playlistId: Long, newName: String)
     suspend fun deletePlaylist(id: Long)
     suspend fun addSongToPlaylist(playlistId: Long, track: Track)
     suspend fun addSongsToPlaylist(playlistId: Long, tracks: List<Track>)

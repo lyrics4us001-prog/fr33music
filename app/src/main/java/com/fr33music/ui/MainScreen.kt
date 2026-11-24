@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -46,13 +47,16 @@ import com.fr33music.feature.home.HomeScreen
 import com.fr33music.feature.library.LibraryScreen
 import com.fr33music.feature.player.PlayerScreen
 import com.fr33music.feature.search.SearchScreen
+import com.fr33music.ui.settings.EqualizerScreen
+import com.fr33music.ui.settings.SettingsScreen
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 
 enum class NavTab(val title: String, val icon: ImageVector) {
     HOME("Principal", Icons.Default.Home),
     SEARCH("Buscar", Icons.Default.Search),
-    LIBRARY("Biblioteca", Icons.Default.MusicNote)
+    LIBRARY("Biblioteca", Icons.Default.MusicNote),
+    SETTINGS("Ajustes", Icons.Default.Settings)
 }
 
 @HiltViewModel
@@ -67,6 +71,7 @@ fun MainScreen(
     val playbackState by viewModel.playerRepository.playbackState.collectAsStateWithLifecycle()
     var currentTab by remember { mutableStateOf(NavTab.SEARCH) }
     var isPlayerExpanded by remember { mutableStateOf(false) }
+    var showEqualizerScreen by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     LaunchedEffect(playbackState.error) {
@@ -78,6 +83,10 @@ fun MainScreen(
 
     BackHandler(enabled = isPlayerExpanded) {
         isPlayerExpanded = false
+    }
+
+    BackHandler(enabled = !isPlayerExpanded && showEqualizerScreen) {
+        showEqualizerScreen = false
     }
 
     Box(
@@ -136,6 +145,13 @@ fun MainScreen(
                         }
                     )
                     NavTab.LIBRARY -> LibraryScreen()
+                    NavTab.SETTINGS -> {
+                        if (showEqualizerScreen) {
+                            EqualizerScreen(onBack = { showEqualizerScreen = false })
+                        } else {
+                            SettingsScreen(onOpenEqualizer = { showEqualizerScreen = true })
+                        }
+                    }
                 }
             }
         }

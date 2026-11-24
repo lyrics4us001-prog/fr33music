@@ -76,6 +76,7 @@ fun MiniPlayer(
                     ) {
                         TrackThumbnail(
                             thumbnailUrl = track.thumbnailUrl,
+                            trackId = track.trackId,
                             contentDescription = track.title,
                             size = 48.dp,
                             shapeRadius = Fr33Radius.small

@@ -1,6 +1,7 @@
 package com.fr33music.feature.library
 
 import android.widget.Toast
+import java.io.File
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,19 +32,26 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CallMerge
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.ImportExport
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Upload
@@ -72,6 +80,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -106,9 +115,35 @@ fun LibraryScreen(
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var songForPlaylistDialog by remember { mutableStateOf<Track?>(null) }
     var artistToDelete by remember { mutableStateOf<String?>(null) }
+    var artistToRename by remember { mutableStateOf<String?>(null) }
+    var artistToMerge by remember { mutableStateOf<String?>(null) }
     var playlistToExport by remember { mutableStateOf<Pair<String, List<TrackEntity>>?>(null) }
+    var playlistForCoverChange by remember { mutableStateOf<Long?>(null) }
+    var playlistToRename by remember { mutableStateOf<Pair<Long, String>?>(null) }
+    var trackToRename by remember { mutableStateOf<Track?>(null) }
+    var artistForCoverChange by remember { mutableStateOf<String?>(null) }
 
     val context = LocalContext.current
+
+    val artistCoverPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null && artistForCoverChange != null) {
+            viewModel.updateArtistCover(context, artistForCoverChange!!, uri)
+            Toast.makeText(context, "Portada de artista actualizada", Toast.LENGTH_SHORT).show()
+            artistForCoverChange = null
+        }
+    }
+
+    val playlistCoverPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null && playlistForCoverChange != null) {
+            viewModel.updatePlaylistCover(context, playlistForCoverChange!!, uri)
+            Toast.makeText(context, "Portada de playlist actualizada", Toast.LENGTH_SHORT).show()
+            playlistForCoverChange = null
+        }
+    }
 
     val singlePlaylistExportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
@@ -130,10 +165,10 @@ fun LibraryScreen(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri != null) {
-            viewModel.exportAllPlaylistsToUri(context, uri) { success ->
+            viewModel.exportFullLibraryToUri(context, uri) { success ->
                 Toast.makeText(
                     context,
-                    if (success) "Copia de seguridad guardada con éxito" else "Error al exportar playlists",
+                    if (success) "Biblioteca completa exportada con éxito" else "Error al exportar biblioteca",
                     Toast.LENGTH_SHORT
                 ).show()
             }
@@ -144,7 +179,7 @@ fun LibraryScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            viewModel.importPlaylistsFromUri(context, uri) { success, message ->
+            viewModel.importFullLibraryFromUri(context, uri) { success, message ->
                 Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             }
         }
@@ -177,10 +212,60 @@ fun LibraryScreen(
             )
 
             if (uiState.selectedArtist == null && uiState.selectedPlaylistId == null) {
-                SortFilterMenu(
-                    sortOrder = uiState.sortOrder,
-                    onSortOrderSelected = viewModel::setSortOrder
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    var showExportImportMenu by remember { mutableStateOf(false) }
+
+                    Box {
+                        IconButton(onClick = { showExportImportMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Default.ImportExport,
+                                contentDescription = "Exportar o Importar Biblioteca",
+                                tint = ColorTextPrimary
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showExportImportMenu,
+                            onDismissRequest = { showExportImportMenu = false },
+                            containerColor = ColorSurface
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Exportar Biblioteca Completa", color = ColorTextPrimary) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Upload,
+                                        contentDescription = null,
+                                        tint = ColorPrimary
+                                    )
+                                },
+                                onClick = {
+                                    showExportImportMenu = false
+                                    exportAllLauncher.launch("Fr33Music_Backup.json")
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text("Importar Biblioteca", color = ColorTextPrimary) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.FolderOpen,
+                                        contentDescription = null,
+                                        tint = ColorTextSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showExportImportMenu = false
+                                    importPlaylistsLauncher.launch(arrayOf("application/json", "*/*"))
+                                }
+                            )
+                        }
+                    }
+
+                    SortFilterMenu(
+                        sortOrder = uiState.sortOrder,
+                        onSortOrderSelected = viewModel::setSortOrder
+                    )
+                }
             }
         }
 
@@ -223,6 +308,36 @@ fun LibraryScreen(
             }
         }
 
+        val onAutoRenameAll: (List<TrackEntity>) -> Unit = { tracksToParse ->
+            if (tracksToParse.isNotEmpty()) {
+                Toast.makeText(context, "Optimizando nombres con IA...", Toast.LENGTH_SHORT).show()
+                viewModel.batchSmartParse(tracksToParse) { updatedCount ->
+                    Toast.makeText(
+                        context,
+                        if (updatedCount > 0) "Se actualizaron $updatedCount canciones" else "Todos los nombres ya estaban optimizados",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+
+        val onRefreshMetadata: (List<TrackEntity>) -> Unit = { tracksToRefresh ->
+            if (tracksToRefresh.isNotEmpty()) {
+                Toast.makeText(
+                    context,
+                    "Actualizando metadatos de ${tracksToRefresh.size} canciones...",
+                    Toast.LENGTH_SHORT
+                ).show()
+                viewModel.refreshMetadata(tracksToRefresh) {
+                    Toast.makeText(
+                        context,
+                        "Metadatos actualizados",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -241,12 +356,19 @@ fun LibraryScreen(
                             sortOrder = uiState.sortOrder,
                             onSortOrderSelected = viewModel::setSortOrder,
                             onBack = { viewModel.selectArtist(null) },
+                            onAutoRenameAll = onAutoRenameAll,
+                            onRefreshMetadata = onRefreshMetadata,
+                            onChangeCover = {
+                                artistForCoverChange = selectedArtist
+                                artistCoverPickerLauncher.launch("image/*")
+                            },
                             onPlayTrack = { track, list -> viewModel.playFromList(track, list) },
                             onPlayAll = { tracks -> viewModel.playAll(tracks) },
                             onDownloadAll = onDownloadAll,
                             onToggleSave = { track, isSaved -> viewModel.toggleSave(track, isSaved) },
                             onDeleteDownload = { trackId -> viewModel.deleteDownload(trackId) },
-                            onAddToPlaylist = { track -> songForPlaylistDialog = track }
+                            onAddToPlaylist = { track -> songForPlaylistDialog = track },
+                            onRename = { track -> trackToRename = track }
                         )
                     } else {
                         if (uiState.artists.isEmpty()) {
@@ -258,15 +380,16 @@ fun LibraryScreen(
                         } else {
                             LazyColumn(modifier = Modifier.fillMaxSize()) {
                                 items(uiState.artists, key = { it.name }) { artistItem ->
-                                    GroupRow(
-                                        title = artistItem.name,
-                                        subtitle = "${artistItem.trackCount} ${if (artistItem.trackCount == 1) "canción" else "canciones"}",
-                                        thumbnailUrl = artistItem.thumbnailUrl,
-                                        trackId = null,
-                                        fallbackIcon = Icons.Default.Person,
-                                        isCircular = true,
+                                    ArtistRow(
+                                        artist = artistItem,
                                         onClick = { viewModel.selectArtist(artistItem.name) },
-                                        onDelete = { artistToDelete = artistItem.name }
+                                        onDelete = { artistToDelete = artistItem.name },
+                                        onRename = { artistToRename = artistItem.name },
+                                        onMerge = { artistToMerge = artistItem.name },
+                                        onChangeCover = {
+                                            artistForCoverChange = artistItem.name
+                                            artistCoverPickerLauncher.launch("image/*")
+                                        }
                                     )
                                     HorizontalDivider(
                                         color = ColorDivider,
@@ -295,14 +418,22 @@ fun LibraryScreen(
                                 playlistToExport = Pair(currentName, playlistSongs)
                                 singlePlaylistExportLauncher.launch("$safeName.json")
                             },
+                            onAutoRenameAll = onAutoRenameAll,
+                            onRefreshMetadata = onRefreshMetadata,
+                            onChangeCover = {
+                                playlistForCoverChange = selectedPlaylistId
+                                playlistCoverPickerLauncher.launch("image/*")
+                            },
                             onPlayTrack = { track, list -> viewModel.playFromList(track, list) },
                             onPlayAll = { tracks -> viewModel.playAll(tracks) },
                             onDownloadAll = onDownloadAll,
                             onToggleSave = { track, isSaved -> viewModel.toggleSave(track, isSaved) },
                             onDeleteDownload = { trackId -> viewModel.deleteDownload(trackId) },
+                            onAddToPlaylist = { track -> songForPlaylistDialog = track },
                             onRemoveFromPlaylist = { trackId ->
                                 viewModel.removeSongFromPlaylist(selectedPlaylistId, trackId)
-                            }
+                            },
+                            onRename = { track -> trackToRename = track }
                         )
                     } else {
                         Column(modifier = Modifier.fillMaxSize()) {
@@ -318,48 +449,18 @@ fun LibraryScreen(
                                     style = Fr33Typography.titleMedium,
                                     color = ColorTextSecondary
                                 )
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    // Botón Importar Playlists
-                                    IconButton(
-                                        onClick = {
-                                            importPlaylistsLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
-                                        }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.FolderOpen,
-                                            contentDescription = "Importar playlists",
-                                            tint = ColorTextPrimary
-                                        )
-                                    }
-
-                                    // Botón Exportar Todas las Playlists
-                                    IconButton(
-                                        onClick = {
-                                            exportAllLauncher.launch("fr33music_backup.json")
-                                        }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Upload,
-                                            contentDescription = "Exportar todas las playlists",
-                                            tint = ColorTextPrimary
-                                        )
-                                    }
-
+                                Button(
+                                    onClick = { showCreatePlaylistDialog = true },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ColorPrimary),
+                                    shape = RoundedCornerShape(Fr33Radius.large)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "Nueva Playlist",
+                                        modifier = Modifier.size(18.dp)
+                                    )
                                     Spacer(modifier = Modifier.width(4.dp))
-
-                                    Button(
-                                        onClick = { showCreatePlaylistDialog = true },
-                                        colors = ButtonDefaults.buttonColors(containerColor = ColorPrimary),
-                                        shape = RoundedCornerShape(Fr33Radius.large)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Add,
-                                            contentDescription = "Nueva Playlist",
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(text = "Nueva", style = Fr33Typography.labelMedium)
-                                    }
+                                    Text(text = "Nueva", style = Fr33Typography.labelMedium)
                                 }
                             }
 
@@ -375,6 +476,11 @@ fun LibraryScreen(
                                         PlaylistRow(
                                             playlist = playlist,
                                             onClick = { viewModel.selectPlaylist(playlist.id, playlist.name) },
+                                            onRename = { playlistToRename = Pair(playlist.id, playlist.name) },
+                                            onChangeCover = {
+                                                playlistForCoverChange = playlist.id
+                                                playlistCoverPickerLauncher.launch("image/*")
+                                            },
                                             onDelete = { viewModel.deletePlaylist(playlist.id) }
                                         )
                                         HorizontalDivider(
@@ -463,19 +569,71 @@ fun LibraryScreen(
                                     style = Fr33Typography.bodyMedium,
                                     color = ColorTextSecondary
                                 )
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (allTracksDomain.isNotEmpty()) {
-                                        IconButton(onClick = { onDownloadAll(allTracksDomain) }) {
-                                            Icon(
-                                                imageVector = Icons.Default.Download,
-                                                contentDescription = "Descargar todo",
-                                                tint = ColorPrimary
+
+                                var showTopMenu by remember { mutableStateOf(false) }
+                                var showSortDialog by remember { mutableStateOf(false) }
+
+                                Box {
+                                    IconButton(onClick = { showTopMenu = true }) {
+                                        Icon(
+                                            imageVector = Icons.Default.MoreVert,
+                                            contentDescription = "Opciones",
+                                            tint = ColorTextPrimary
+                                        )
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = showTopMenu,
+                                        onDismissRequest = { showTopMenu = false },
+                                        containerColor = ColorSurface
+                                    ) {
+                                        if (allTracksDomain.isNotEmpty()) {
+                                            DropdownMenuItem(
+                                                text = { Text("Descargar todo", color = ColorTextPrimary) },
+                                                leadingIcon = {
+                                                    Icon(imageVector = Icons.Default.Download, contentDescription = null, tint = ColorPrimary)
+                                                },
+                                                onClick = {
+                                                    showTopMenu = false
+                                                    onDownloadAll(allTracksDomain)
+                                                }
+                                            )
+                                        }
+
+                                        DropdownMenuItem(
+                                            text = { Text("Organizar", color = ColorTextPrimary) },
+                                            leadingIcon = {
+                                                Icon(imageVector = Icons.Default.FilterList, contentDescription = null, tint = ColorTextSecondary)
+                                            },
+                                            onClick = {
+                                                showTopMenu = false
+                                                showSortDialog = true
+                                            }
+                                        )
+
+                                        if (filteredEntities.isNotEmpty()) {
+                                            DropdownMenuItem(
+                                                text = { Text("Nombres automáticos (IA)", color = ColorTextPrimary) },
+                                                leadingIcon = {
+                                                    Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = null, tint = ColorPrimary)
+                                                },
+                                                onClick = {
+                                                    showTopMenu = false
+                                                    onAutoRenameAll(filteredEntities)
+                                                }
                                             )
                                         }
                                     }
-                                    SortFilterMenu(
-                                        sortOrder = uiState.sortOrder,
-                                        onSortOrderSelected = viewModel::setSortOrder
+                                }
+
+                                if (showSortDialog) {
+                                    SortOrderDialog(
+                                        currentOrder = uiState.sortOrder,
+                                        onOrderSelected = {
+                                            viewModel.setSortOrder(it)
+                                            showSortDialog = false
+                                        },
+                                        onDismiss = { showSortDialog = false }
                                     )
                                 }
                             }
@@ -486,14 +644,23 @@ fun LibraryScreen(
                                     TrackRow(
                                         track = domain,
                                         onClick = { viewModel.playFromList(domain, allTracksDomain) },
+                                        onLongClick = { trackToRename = domain },
                                         trailingContent = {
-                                            TrackActionButtons(
-                                                isSaved = trackEntity.isSaved,
-                                                isDownloaded = trackEntity.isDownloaded,
-                                                onToggleSave = { viewModel.toggleSave(domain, trackEntity.isSaved) },
-                                                onDeleteDownload = { viewModel.deleteDownload(trackEntity.id) },
-                                                onAddToPlaylist = { songForPlaylistDialog = domain }
-                                            )
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                IconButton(onClick = { songForPlaylistDialog = domain }) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.PlaylistAdd,
+                                                        contentDescription = "Añadir a playlist",
+                                                        tint = ColorTextSecondary
+                                                    )
+                                                }
+                                                TrackKebabMenu(
+                                                    isSaved = trackEntity.isSaved,
+                                                    onToggleSave = { viewModel.toggleSave(domain, trackEntity.isSaved) },
+                                                    onRename = { trackToRename = domain },
+                                                    onDelete = { viewModel.deleteDownload(trackEntity.id) }
+                                                )
+                                            }
                                         }
                                     )
                                     HorizontalDivider(
@@ -501,6 +668,10 @@ fun LibraryScreen(
                                         thickness = 0.5.dp,
                                         modifier = Modifier.padding(start = 72.dp)
                                     )
+                                }
+
+                                item {
+                                    ListSummaryFooter(tracks = filteredEntities)
                                 }
                             }
                         }
@@ -552,6 +723,113 @@ fun LibraryScreen(
         )
     }
 
+    // Diálogo para cambiar nombre de artista
+    if (artistToRename != null) {
+        val oldName = artistToRename!!
+        var newArtistName by remember(oldName) { mutableStateOf(oldName) }
+        AlertDialog(
+            onDismissRequest = { artistToRename = null },
+            title = { Text(text = "Cambiar nombre de artista", color = ColorTextPrimary) },
+            text = {
+                OutlinedTextField(
+                    value = newArtistName,
+                    onValueChange = { newArtistName = it },
+                    label = { Text("Nombre del artista") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newArtistName.isNotBlank() && !newArtistName.trim().equals(oldName, ignoreCase = true)) {
+                            viewModel.renameArtist(oldName, newArtistName.trim())
+                            artistToRename = null
+                        }
+                    },
+                    enabled = newArtistName.isNotBlank()
+                ) {
+                    Text("Guardar", color = ColorPrimary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { artistToRename = null }) {
+                    Text("Cancelar", color = ColorTextSecondary)
+                }
+            },
+            containerColor = ColorSurface
+        )
+    }
+
+    // Diálogo para combinar artista
+    if (artistToMerge != null) {
+        val sourceArtist = artistToMerge!!
+        val otherArtists = remember(uiState.artists, sourceArtist) {
+            uiState.artists.filter { !it.name.equals(sourceArtist, ignoreCase = true) }
+        }
+        AlertDialog(
+            onDismissRequest = { artistToMerge = null },
+            title = { Text(text = "Combinar artista", color = ColorTextPrimary) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Combinar todas las canciones de \"$sourceArtist\" con:",
+                        style = Fr33Typography.bodyMedium,
+                        color = ColorTextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
+                    if (otherArtists.isEmpty()) {
+                        Text(
+                            text = "No hay otros artistas disponibles para combinar.",
+                            style = Fr33Typography.bodySmall,
+                            color = ColorTextTertiary
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(250.dp)
+                        ) {
+                            items(otherArtists, key = { it.name }) { target ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            viewModel.mergeArtists(sourceArtist, target.name)
+                                            artistToMerge = null
+                                        }
+                                        .padding(vertical = Fr33Spacing.small),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    TrackThumbnail(
+                                        thumbnailUrl = target.thumbnailUrl,
+                                        contentDescription = target.name,
+                                        size = 36.dp,
+                                        isCircular = true,
+                                        fallbackIcon = Icons.Default.Person
+                                    )
+                                    Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                                    Text(
+                                        text = target.name,
+                                        style = Fr33Typography.bodyLarge,
+                                        color = ColorTextPrimary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { artistToMerge = null }) {
+                    Text("Cancelar", color = ColorTextSecondary)
+                }
+            },
+            containerColor = ColorSurface
+        )
+    }
+
     // Diálogo para añadir canción a una playlist
     if (songForPlaylistDialog != null) {
         val targetTrack = songForPlaylistDialog!!
@@ -571,69 +849,352 @@ fun LibraryScreen(
             }
         )
     }
+
+    // Diálogo para cambiar nombre de playlist
+    if (playlistToRename != null) {
+        val (pId, currentName) = playlistToRename!!
+        var newPlaylistName by remember(pId) { mutableStateOf(currentName) }
+        AlertDialog(
+            onDismissRequest = { playlistToRename = null },
+            title = { Text(text = "Cambiar nombre de playlist", color = ColorTextPrimary) },
+            text = {
+                OutlinedTextField(
+                    value = newPlaylistName,
+                    onValueChange = { newPlaylistName = it },
+                    label = { Text("Nombre de la playlist") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newPlaylistName.isNotBlank()) {
+                            viewModel.renamePlaylist(pId, newPlaylistName.trim())
+                            playlistToRename = null
+                        }
+                    },
+                    enabled = newPlaylistName.isNotBlank()
+                ) {
+                    Text("Guardar", color = ColorPrimary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { playlistToRename = null }) {
+                    Text("Cancelar", color = ColorTextSecondary)
+                }
+            },
+            containerColor = ColorSurface
+        )
+    }
+
+    // Diálogo para cambiar nombre de canción con IA
+    if (trackToRename != null) {
+        val targetTrack = trackToRename!!
+        EditTrackInfoDialog(
+            track = targetTrack,
+            onDismiss = { trackToRename = null },
+            onConfirm = { newTitle, newArtist ->
+                viewModel.updateTrackMetadata(targetTrack.trackId, newTitle, newArtist)
+                Toast.makeText(context, "Información actualizada", Toast.LENGTH_SHORT).show()
+                trackToRename = null
+            }
+        )
+    }
 }
 
 @Composable
-private fun TrackActionButtons(
-    isSaved: Boolean,
-    isDownloaded: Boolean,
-    onToggleSave: () -> Unit,
-    onDeleteDownload: () -> Unit,
-    onAddToPlaylist: () -> Unit,
-    isInsidePlaylist: Boolean = false,
+private fun TrackKebabMenu(
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    isSaved: Boolean? = null,
+    onToggleSave: (() -> Unit)? = null,
+    onAddToPlaylist: (() -> Unit)? = null,
+    addToPlaylistLabel: String = "Añadir a Playlist",
     onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        // Corazón (Favorito)
-        IconButton(onClick = onToggleSave) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        IconButton(onClick = { expanded = true }) {
             Icon(
-                imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                contentDescription = if (isSaved) "Quitar de favoritos" else "Guardar en favoritos",
-                tint = if (isSaved) ColorPrimary else ColorTextTertiary
+                imageVector = Icons.Default.MoreVert,
+                contentDescription = "Opciones",
+                tint = ColorTextSecondary
             )
         }
 
-        // Bote de basura (solo si está descargada físicamente)
-        if (isDownloaded) {
-            IconButton(onClick = onDeleteDownload) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Eliminar descarga",
-                    tint = ColorTextTertiary
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            containerColor = ColorSurface
+        ) {
+            if (onToggleSave != null && isSaved != null) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = if (isSaved) "Quitar de Favoritos" else "Añadir a Favoritos",
+                            color = ColorTextPrimary
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = null,
+                            tint = if (isSaved) ColorPrimary else ColorTextSecondary
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onToggleSave()
+                    }
                 )
             }
-        }
 
-        if (isInsidePlaylist) {
-            // Quitar de playlist (X)
-            if (onRemoveFromPlaylist != null) {
-                IconButton(onClick = onRemoveFromPlaylist) {
+            DropdownMenuItem(
+                text = { Text(text = "Cambiar nombre", color = ColorTextPrimary) },
+                leadingIcon = {
                     Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Quitar de playlist",
-                        tint = ColorTextTertiary
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = null,
+                        tint = ColorTextSecondary
                     )
+                },
+                onClick = {
+                    expanded = false
+                    onRename()
                 }
-            }
-        } else {
-            // Añadir a playlist (+)
-            IconButton(onClick = onAddToPlaylist) {
-                Icon(
-                    imageVector = Icons.Default.PlaylistAdd,
-                    contentDescription = "Añadir a playlist",
-                    tint = ColorTextSecondary
+            )
+
+            if (onAddToPlaylist != null) {
+                DropdownMenuItem(
+                    text = { Text(text = addToPlaylistLabel, color = ColorTextPrimary) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.PlaylistAdd,
+                            contentDescription = null,
+                            tint = ColorTextSecondary
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onAddToPlaylist()
+                    }
                 )
             }
+
+            if (onRemoveFromPlaylist != null) {
+                DropdownMenuItem(
+                    text = { Text(text = "Quitar de esta Playlist", color = ColorError) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = null,
+                            tint = ColorError
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onRemoveFromPlaylist()
+                    }
+                )
+            }
+
+            DropdownMenuItem(
+                text = { Text(text = "Borrar del dispositivo", color = ColorError) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = ColorError
+                    )
+                },
+                onClick = {
+                    expanded = false
+                    onDelete()
+                }
+            )
         }
     }
+}
+
+@Composable
+private fun ListSummaryFooter(tracks: List<TrackEntity>) {
+    val context = LocalContext.current
+    val validDurationMs = tracks.filter { it.durationMs > 0 }.sumOf { it.durationMs }
+    val totalSeconds = validDurationMs / 1000
+    val minutes = if (totalSeconds in 1..59) 1 else totalSeconds / 60
+    val trackCount = tracks.size
+    val trackLabel = if (trackCount == 1) "1 pista" else "$trackCount pistas"
+
+    // Calcular peso total de archivos locales (opus / m4a)
+    val totalBytes = remember(tracks) {
+        val downloadsDir = File(context.filesDir, "downloads")
+        var sum = 0L
+        for (track in tracks) {
+            val opusFile = File(downloadsDir, "${track.id}.opus")
+            val m4aFile = File(downloadsDir, "${track.id}.m4a")
+            if (opusFile.exists()) {
+                sum += opusFile.length()
+            } else if (m4aFile.exists()) {
+                sum += m4aFile.length()
+            } else {
+                track.localPath?.let { path ->
+                    val f = File(path)
+                    if (f.exists()) {
+                        sum += f.length()
+                    }
+                }
+            }
+        }
+        sum
+    }
+
+    val sizeFormatted = remember(totalBytes) {
+        val totalMb = totalBytes.toDouble() / (1024.0 * 1024.0)
+        if (totalMb >= 1024.0) {
+            val totalGb = totalMb / 1024.0
+            String.format(java.util.Locale.US, "%.1f GB", totalGb)
+        } else {
+            String.format(java.util.Locale.US, "%.1f MB", totalMb)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = Fr33Spacing.extraLarge),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "$trackLabel • $minutes minutos • $sizeFormatted",
+            style = Fr33Typography.bodyMedium,
+            color = ColorTextTertiary,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun SortOrderDialog(
+    currentOrder: LibrarySortOrder,
+    onOrderSelected: (LibrarySortOrder) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "Organizar lista", color = ColorTextPrimary) },
+        text = {
+            Column {
+                LibrarySortOrder.entries.forEach { order ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOrderSelected(order) }
+                            .padding(vertical = Fr33Spacing.medium),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = order.title,
+                            color = if (currentOrder == order) ColorPrimary else ColorTextPrimary,
+                            style = Fr33Typography.bodyLarge,
+                            fontWeight = if (currentOrder == order) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cerrar", color = ColorTextSecondary)
+            }
+        },
+        containerColor = ColorSurface
+    )
+}
+
+@Composable
+private fun EditTrackInfoDialog(
+    track: Track,
+    onDismiss: () -> Unit,
+    onConfirm: (newTitle: String, newArtist: String) -> Unit
+) {
+    var title by remember(track) { mutableStateOf(track.title) }
+    var artist by remember(track) { mutableStateOf(track.artistName) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "Cambiar nombre", color = ColorTextPrimary) },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(Fr33Spacing.medium)
+            ) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Nombre de la canción") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = artist,
+                    onValueChange = { artist = it },
+                    label = { Text("Artista") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedButton(
+                    onClick = {
+                        val (cleanTitle, cleanArtist) = TrackMetadataParser.parse(title, artist)
+                        title = cleanTitle
+                        artist = cleanArtist
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(Fr33Radius.medium)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = "Limpiar con IA",
+                        tint = ColorPrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(Fr33Spacing.small))
+                    Text(text = "Limpiar con IA", color = ColorPrimary)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (title.isNotBlank() && artist.isNotBlank()) {
+                        onConfirm(title.trim(), artist.trim())
+                    }
+                },
+                enabled = title.isNotBlank() && artist.isNotBlank()
+            ) {
+                Text("Guardar", color = ColorPrimary)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar", color = ColorTextSecondary)
+            }
+        },
+        containerColor = ColorSurface
+    )
 }
 
 @Composable
 private fun PlaylistRow(
     playlist: PlaylistWithSongCount,
     onClick: () -> Unit,
+    onRename: () -> Unit,
+    onChangeCover: () -> Unit,
     onDelete: () -> Unit
 ) {
+    var showMenu by remember { mutableStateOf(false) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -675,6 +1236,67 @@ private fun PlaylistRow(
                 tint = ColorTextTertiary
             )
         }
+
+        Box {
+            IconButton(onClick = { showMenu = true }) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "Más opciones",
+                    tint = ColorTextSecondary
+                )
+            }
+
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+                containerColor = ColorSurface
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Cambiar nombre", color = ColorTextPrimary) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = null,
+                            tint = ColorTextSecondary
+                        )
+                    },
+                    onClick = {
+                        showMenu = false
+                        onRename()
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Cambiar portada", color = ColorTextPrimary) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Image,
+                            contentDescription = null,
+                            tint = ColorTextSecondary
+                        )
+                    },
+                    onClick = {
+                        showMenu = false
+                        onChangeCover()
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Borrar Playlist", color = ColorError) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = ColorError
+                        )
+                    },
+                    onClick = {
+                        showMenu = false
+                        onDelete()
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -686,14 +1308,22 @@ private fun PlaylistDetailView(
     onSortOrderSelected: (LibrarySortOrder) -> Unit = {},
     onBack: () -> Unit,
     onExport: () -> Unit = {},
+    onAutoRenameAll: (List<TrackEntity>) -> Unit = {},
+    onRefreshMetadata: (List<TrackEntity>) -> Unit = {},
+    onChangeCover: () -> Unit = {},
     onPlayTrack: (Track, List<Track>) -> Unit,
     onPlayAll: (List<Track>) -> Unit,
     onDownloadAll: (List<Track>) -> Unit = {},
     onToggleSave: (Track, Boolean) -> Unit,
     onDeleteDownload: (String) -> Unit,
-    onRemoveFromPlaylist: (String) -> Unit
+    onAddToPlaylist: (Track) -> Unit = {},
+    onRemoveFromPlaylist: (String) -> Unit,
+    onRename: (Track) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var showTopMenu by remember { mutableStateOf(false) }
+    var showSortDialog by remember { mutableStateOf(false) }
+
     val filteredTracks = remember(tracks, searchQuery) {
         if (searchQuery.isBlank()) tracks
         else tracks.filter {
@@ -729,30 +1359,128 @@ private fun PlaylistDetailView(
                 overflow = TextOverflow.Ellipsis
             )
 
-            // 1. Descargar (IconButton)
-            if (allDomainTracks.isNotEmpty()) {
-                IconButton(onClick = { onDownloadAll(allDomainTracks) }) {
+            // Menú de 3 puntos en barra superior
+            Box {
+                IconButton(onClick = { showTopMenu = true }) {
                     Icon(
-                        imageVector = Icons.Default.Download,
-                        contentDescription = "Descargar todas las canciones",
-                        tint = ColorPrimary
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Más opciones",
+                        tint = ColorTextPrimary
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = showTopMenu,
+                    onDismissRequest = { showTopMenu = false },
+                    containerColor = ColorSurface
+                ) {
+                    if (allDomainTracks.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Descargar todo", color = ColorTextPrimary) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    tint = ColorPrimary
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                onDownloadAll(allDomainTracks)
+                            }
+                        )
+                    }
+
+                    if (tracks.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Refrescar metadatos", color = ColorTextPrimary) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    tint = ColorPrimary
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                onRefreshMetadata(tracks)
+                            }
+                        )
+                    }
+
+                    DropdownMenuItem(
+                        text = { Text("Exportar playlist", color = ColorTextPrimary) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = null,
+                                tint = ColorTextSecondary
+                            )
+                        },
+                        onClick = {
+                            showTopMenu = false
+                            onExport()
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = { Text("Organizar", color = ColorTextPrimary) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.FilterList,
+                                contentDescription = null,
+                                tint = ColorTextSecondary
+                            )
+                        },
+                        onClick = {
+                            showTopMenu = false
+                            showSortDialog = true
+                        }
+                    )
+
+                    if (tracks.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Nombres automáticos (IA)", color = ColorTextPrimary) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = ColorPrimary
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                onAutoRenameAll(tracks)
+                            }
+                        )
+                    }
+
+                    DropdownMenuItem(
+                        text = { Text("Cambiar portada", color = ColorTextPrimary) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Image,
+                                contentDescription = null,
+                                tint = ColorTextSecondary
+                            )
+                        },
+                        onClick = {
+                            showTopMenu = false
+                            onChangeCover()
+                        }
                     )
                 }
             }
+        }
 
-            // 2. Compartir / Exportar
-            IconButton(onClick = onExport) {
-                Icon(
-                    imageVector = Icons.Default.Share,
-                    contentDescription = "Exportar playlist",
-                    tint = ColorTextPrimary
-                )
-            }
-
-            // 3. Filtro
-            SortFilterMenu(
-                sortOrder = sortOrder,
-                onSortOrderSelected = onSortOrderSelected
+        if (showSortDialog) {
+            SortOrderDialog(
+                currentOrder = sortOrder,
+                onOrderSelected = {
+                    onSortOrderSelected(it)
+                    showSortDialog = false
+                },
+                onDismiss = { showSortDialog = false }
             )
         }
 
@@ -832,14 +1560,15 @@ private fun PlaylistDetailView(
                     TrackRow(
                         track = domain,
                         onClick = { onPlayTrack(domain, domainTracks) },
+                        onLongClick = { onRename(domain) },
                         trailingContent = {
-                            TrackActionButtons(
+                            TrackKebabMenu(
                                 isSaved = trackEntity.isSaved,
-                                isDownloaded = trackEntity.isDownloaded,
                                 onToggleSave = { onToggleSave(domain, trackEntity.isSaved) },
-                                onDeleteDownload = { onDeleteDownload(trackEntity.id) },
-                                onAddToPlaylist = {},
-                                isInsidePlaylist = true,
+                                onRename = { onRename(domain) },
+                                onDelete = { onDeleteDownload(trackEntity.id) },
+                                onAddToPlaylist = { onAddToPlaylist(domain) },
+                                addToPlaylistLabel = "Añadir a otra Playlist",
                                 onRemoveFromPlaylist = { onRemoveFromPlaylist(trackEntity.id) }
                             )
                         }
@@ -850,6 +1579,128 @@ private fun PlaylistDetailView(
                         modifier = Modifier.padding(start = 72.dp)
                     )
                 }
+
+                item {
+                    ListSummaryFooter(tracks = filteredTracks)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtistRow(
+    artist: ArtistItem,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    onRename: () -> Unit,
+    onMerge: () -> Unit,
+    onChangeCover: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.medium),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TrackThumbnail(
+            thumbnailUrl = artist.thumbnailUrl,
+            trackId = null,
+            contentDescription = artist.name,
+            size = 56.dp,
+            isCircular = true,
+            shapeRadius = Fr33Radius.medium,
+            fallbackIcon = Icons.Default.Person
+        )
+
+        Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = artist.name,
+                style = Fr33Typography.titleMedium,
+                color = ColorTextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "${artist.trackCount} ${if (artist.trackCount == 1) "canción" else "canciones"}",
+                style = Fr33Typography.bodyMedium,
+                color = ColorTextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        IconButton(onClick = onDelete) {
+            Icon(
+                imageVector = Icons.Default.Delete,
+                contentDescription = "Eliminar",
+                tint = ColorTextTertiary
+            )
+        }
+
+        Box {
+            IconButton(onClick = { showMenu = true }) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "Más opciones",
+                    tint = ColorTextSecondary
+                )
+            }
+
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+                containerColor = ColorSurface
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Cambiar nombre", color = ColorTextPrimary) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = null,
+                            tint = ColorTextSecondary
+                        )
+                    },
+                    onClick = {
+                        showMenu = false
+                        onRename()
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Combinar", color = ColorTextPrimary) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.CallMerge,
+                            contentDescription = null,
+                            tint = ColorTextSecondary
+                        )
+                    },
+                    onClick = {
+                        showMenu = false
+                        onMerge()
+                    }
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Cambiar portada", color = ColorTextPrimary) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Image,
+                            contentDescription = null,
+                            tint = ColorTextSecondary
+                        )
+                    },
+                    onClick = {
+                        showMenu = false
+                        onChangeCover()
+                    }
+                )
             }
         }
     }
@@ -922,15 +1773,21 @@ private fun ArtistDetailView(
     sortOrder: LibrarySortOrder = LibrarySortOrder.RECENTLY_ADDED,
     onSortOrderSelected: (LibrarySortOrder) -> Unit = {},
     onBack: () -> Unit,
+    onAutoRenameAll: (List<TrackEntity>) -> Unit = {},
+    onRefreshMetadata: (List<TrackEntity>) -> Unit = {},
+    onChangeCover: () -> Unit = {},
     onPlayTrack: (Track, List<Track>) -> Unit,
     onPlayAll: (List<Track>) -> Unit,
     onDownloadAll: (List<Track>) -> Unit = {},
     onToggleSave: (Track, Boolean) -> Unit,
     onDeleteDownload: (String) -> Unit,
-    onAddToPlaylist: (Track) -> Unit
+    onAddToPlaylist: (Track) -> Unit,
+    onRename: (Track) -> Unit
 ) {
     val domainTracks = tracks.map { it.toDomain() }
     val listState = rememberLazyListState()
+    var showTopMenu by remember { mutableStateOf(false) }
+    var showSortDialog by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -964,19 +1821,114 @@ private fun ArtistDetailView(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            if (domainTracks.isNotEmpty()) {
-                IconButton(onClick = { onDownloadAll(domainTracks) }) {
+
+            // Menú de 3 puntos en barra superior
+            Box {
+                IconButton(onClick = { showTopMenu = true }) {
                     Icon(
-                        imageVector = Icons.Default.Download,
-                        contentDescription = "Descargar todo",
-                        tint = ColorPrimary
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Más opciones",
+                        tint = ColorTextPrimary
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = showTopMenu,
+                    onDismissRequest = { showTopMenu = false },
+                    containerColor = ColorSurface
+                ) {
+                    if (domainTracks.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Descargar todo", color = ColorTextPrimary) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    tint = ColorPrimary
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                onDownloadAll(domainTracks)
+                            }
+                        )
+                    }
+
+                    if (tracks.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Refrescar metadatos", color = ColorTextPrimary) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    tint = ColorPrimary
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                onRefreshMetadata(tracks)
+                            }
+                        )
+                    }
+
+                    DropdownMenuItem(
+                        text = { Text("Organizar", color = ColorTextPrimary) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.FilterList,
+                                contentDescription = null,
+                                tint = ColorTextSecondary
+                            )
+                        },
+                        onClick = {
+                            showTopMenu = false
+                            showSortDialog = true
+                        }
+                    )
+
+                    if (tracks.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Nombres automáticos (IA)", color = ColorTextPrimary) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = ColorPrimary
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                onAutoRenameAll(tracks)
+                            }
+                        )
+                    }
+
+                    DropdownMenuItem(
+                        text = { Text("Cambiar portada", color = ColorTextPrimary) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Image,
+                                contentDescription = null,
+                                tint = ColorTextSecondary
+                            )
+                        },
+                        onClick = {
+                            showTopMenu = false
+                            onChangeCover()
+                        }
                     )
                 }
             }
+        }
 
-            SortFilterMenu(
-                sortOrder = sortOrder,
-                onSortOrderSelected = onSortOrderSelected
+        if (showSortDialog) {
+            SortOrderDialog(
+                currentOrder = sortOrder,
+                onOrderSelected = {
+                    onSortOrderSelected(it)
+                    showSortDialog = false
+                },
+                onDismiss = { showSortDialog = false }
             )
         }
 
@@ -989,14 +1941,22 @@ private fun ArtistDetailView(
                 TrackRow(
                     track = domain,
                     onClick = { onPlayTrack(domain, domainTracks) },
+                    onLongClick = { onRename(domain) },
                     trailingContent = {
-                        TrackActionButtons(
-                            isSaved = trackEntity.isSaved,
-                            isDownloaded = trackEntity.isDownloaded,
-                            onToggleSave = { onToggleSave(domain, trackEntity.isSaved) },
-                            onDeleteDownload = { onDeleteDownload(trackEntity.id) },
-                            onAddToPlaylist = { onAddToPlaylist(domain) }
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { onToggleSave(domain, trackEntity.isSaved) }) {
+                                Icon(
+                                    imageVector = if (trackEntity.isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    contentDescription = if (trackEntity.isSaved) "Quitar de favoritos" else "Guardar en favoritos",
+                                    tint = if (trackEntity.isSaved) ColorPrimary else ColorTextTertiary
+                                )
+                            }
+                            TrackKebabMenu(
+                                onRename = { onRename(domain) },
+                                onDelete = { onDeleteDownload(trackEntity.id) },
+                                onAddToPlaylist = { onAddToPlaylist(domain) }
+                            )
+                        }
                     }
                 )
                 HorizontalDivider(
@@ -1004,6 +1964,10 @@ private fun ArtistDetailView(
                     thickness = 0.5.dp,
                     modifier = Modifier.padding(start = 72.dp)
                 )
+            }
+
+            item {
+                ListSummaryFooter(tracks = tracks)
             }
         }
     }

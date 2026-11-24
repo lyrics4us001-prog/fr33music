@@ -1,9 +1,15 @@
 package com.fr33music.feature.player
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -26,15 +32,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -61,11 +70,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.io.File
 import com.fr33music.core.database.dao.PlaylistWithSongCount
 import com.fr33music.core.database.download.DownloadState
 import com.fr33music.core.database.entity.DownloadStatus
@@ -96,8 +108,10 @@ fun PlayerScreen(
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val track = uiState.track
 
+    val context = LocalContext.current
     var showAddToPlaylistDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showShareSheet by remember { mutableStateOf(false) }
 
     BackHandler(enabled = true) {
         if (uiState.showLyricsSheet) {
@@ -127,7 +141,7 @@ fun PlayerScreen(
                 .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.medium),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Bar: Down arrow button to collapse & Add to Playlist button
+            // Top Bar: Down arrow button to collapse & Share & Add to Playlist button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -142,16 +156,30 @@ fun PlayerScreen(
                     )
                 }
 
-                IconButton(
-                    onClick = { showAddToPlaylistDialog = true },
-                    enabled = track != null
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlaylistAdd,
-                        contentDescription = "Añadir a playlist",
-                        tint = if (track != null) ColorTextPrimary else ColorTextTertiary,
-                        modifier = Modifier.size(28.dp)
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { showShareSheet = true },
+                        enabled = track != null
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Compartir canción",
+                            tint = if (track != null) ColorTextPrimary else ColorTextTertiary,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { showAddToPlaylistDialog = true },
+                        enabled = track != null
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlaylistAdd,
+                            contentDescription = "Añadir a playlist",
+                            tint = if (track != null) ColorTextPrimary else ColorTextTertiary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
                 }
             }
 
@@ -494,6 +522,138 @@ fun PlayerScreen(
                                 .verticalScroll(scrollState)
                                 .padding(vertical = Fr33Spacing.medium)
                         )
+                    }
+
+                    Spacer(modifier = Modifier.height(Fr33Spacing.large))
+                }
+            }
+        }
+
+        // ModalBottomSheet para Compartir Canción
+        if (showShareSheet && track != null) {
+            val shareSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            ModalBottomSheet(
+                onDismissRequest = { showShareSheet = false },
+                sheetState = shareSheetState,
+                containerColor = ColorSurface,
+                shape = RoundedCornerShape(topStart = Fr33Radius.large, topEnd = Fr33Radius.large)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.medium)
+                ) {
+                    Text(
+                        text = "Compartir",
+                        style = Fr33Typography.titleLarge,
+                        color = ColorTextPrimary,
+                        modifier = Modifier.padding(bottom = Fr33Spacing.medium)
+                    )
+
+                    // Opción 1: Copiar Link de YouTube
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(Fr33Radius.medium))
+                            .clickable {
+                                val youtubeUrl = "https://youtube.com/watch?v=${track.trackId}"
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = ClipData.newPlainText("Enlace de YouTube", youtubeUrl)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "Enlace copiado al portapapeles", Toast.LENGTH_SHORT).show()
+                                showShareSheet = false
+                            }
+                            .padding(vertical = Fr33Spacing.medium, horizontal = Fr33Spacing.small),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Link,
+                            contentDescription = "Copiar Link de YouTube",
+                            tint = ColorPrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                        Column {
+                            Text(
+                                text = "Copiar Link de YouTube",
+                                style = Fr33Typography.titleMedium,
+                                color = ColorTextPrimary
+                            )
+                            Text(
+                                text = "https://youtube.com/watch?v=${track.trackId}",
+                                style = Fr33Typography.bodySmall,
+                                color = ColorTextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
+
+                    // Opción 2: Compartir Canción (Archivo)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(Fr33Radius.medium))
+                            .clickable {
+                                val downloadsDir = File(context.filesDir, "downloads")
+                                val cacheDir = File(context.cacheDir, "audio_cache")
+                                val audioFile = sequenceOf(
+                                    File(downloadsDir, "${track.trackId}.opus"),
+                                    File(downloadsDir, "${track.trackId}.m4a"),
+                                    File(cacheDir, "${track.trackId}.opus"),
+                                    File(cacheDir, "${track.trackId}.m4a")
+                                ).firstOrNull { it.exists() && it.length() > 0 }
+
+                                if (audioFile != null) {
+                                    try {
+                                        val uri = FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            audioFile
+                                        )
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "audio/*"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            putExtra(Intent.EXTRA_SUBJECT, "${track.title} - ${track.artistName}")
+                                            putExtra(Intent.EXTRA_TEXT, "${track.title} - ${track.artistName}")
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        val chooser = Intent.createChooser(shareIntent, "Compartir audio").apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+                                        context.startActivity(chooser)
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Error al compartir archivo: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                } else {
+                                    Toast.makeText(context, "El archivo de audio aún no se ha descargado ni cacheado", Toast.LENGTH_SHORT).show()
+                                }
+                                showShareSheet = false
+                            }
+                            .padding(vertical = Fr33Spacing.medium, horizontal = Fr33Spacing.small),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Audiotrack,
+                            contentDescription = "Compartir Canción (Archivo)",
+                            tint = ColorPrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                        Column {
+                            Text(
+                                text = "Compartir Canción (Archivo)",
+                                style = Fr33Typography.titleMedium,
+                                color = ColorTextPrimary
+                            )
+                            Text(
+                                text = "Enviar archivo de audio local (.opus / .m4a)",
+                                style = Fr33Typography.bodySmall,
+                                color = ColorTextSecondary
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(Fr33Spacing.large))

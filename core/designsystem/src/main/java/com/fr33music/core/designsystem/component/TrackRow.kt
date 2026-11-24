@@ -1,6 +1,8 @@
 package com.fr33music.core.designsystem.component
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,17 +21,28 @@ import com.fr33music.core.designsystem.theme.Fr33Spacing
 import com.fr33music.core.designsystem.theme.Fr33Typography
 import com.fr33music.core.domain.model.Track
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TrackRow(
     track: Track,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
     trailingContent: (@Composable () -> Unit)? = null
 ) {
+    val clickModifier = if (onLongClick != null) {
+        Modifier.combinedClickable(
+            onClick = onClick,
+            onLongClick = onLongClick
+        )
+    } else {
+        Modifier.clickable(onClick = onClick)
+    }
+
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .then(clickModifier)
             .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.small),
         verticalAlignment = Alignment.CenterVertically
     ) {

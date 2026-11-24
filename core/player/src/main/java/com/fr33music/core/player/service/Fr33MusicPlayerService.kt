@@ -1,14 +1,22 @@
 package com.fr33music.core.player.service
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.util.Log
 import androidx.annotation.OptIn
+import androidx.core.app.NotificationCompat
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.fr33music.core.player.PlayerRepository
 import com.fr33music.core.player.R
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -19,17 +27,74 @@ class Fr33MusicPlayerService : MediaSessionService() {
     @Inject
     lateinit var exoPlayer: ExoPlayer
 
+    @Inject
+    lateinit var playerRepository: PlayerRepository
+
     private var mediaSession: MediaSession? = null
 
     companion object {
+        const val NOTIFICATION_ID = 1001
+        const val CHANNEL_ID = "default_channel_id"
+
         @Volatile
         var isRunning: Boolean = false
             internal set
     }
 
+    private fun startImmediateForeground() {
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "Reproducción",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Notificación de reproducción de Fr33Music"
+                    setShowBadge(false)
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+            val pendingIntent = launchIntent?.let {
+                PendingIntent.getActivity(
+                    this,
+                    0,
+                    it,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+            }
+
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Fr33Music")
+                .setContentText("Reproductor listo")
+                .setContentIntent(pendingIntent)
+                .setOngoing(true)
+                .setSilent(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .build()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e("PlayerService", "Error al invocar startForeground inmediato: ${e.message}", e)
+        }
+    }
+
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
+        startImmediateForeground()
         isRunning = true
 
         // 1. MediaSessionService gestiona la notificación 100% de forma nativa
@@ -81,12 +146,13 @@ class Fr33MusicPlayerService : MediaSessionService() {
         val session = sessionBuilder.build()
         mediaSession = session
         addSession(session)
+        playerRepository.attachMediaSession(session)
     }
 
     @OptIn(UnstableApi::class)
     override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
         val player = session.player
-        val keepNotificationAlive = player.mediaItemCount > 0 && player.playbackState != Player.STATE_IDLE
+        val keepNotificationAlive = player.mediaItemCount > 0
         super.onUpdateNotification(session, startInForegroundRequired || keepNotificationAlive)
     }
 
@@ -95,6 +161,9 @@ class Fr33MusicPlayerService : MediaSessionService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!isRunning || exoPlayer.mediaItemCount == 0) {
+            startImmediateForeground()
+        }
         super.onStartCommand(intent, flags, startId)
         return START_STICKY
     }
@@ -109,6 +178,7 @@ class Fr33MusicPlayerService : MediaSessionService() {
 
     override fun onDestroy() {
         isRunning = false
+        playerRepository.detachMediaSession()
         mediaSession?.run {
             removeSession(this)
             release()

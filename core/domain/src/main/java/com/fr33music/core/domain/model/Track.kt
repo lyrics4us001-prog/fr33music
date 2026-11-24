@@ -16,15 +16,14 @@ data class Track(
         fun upgradeThumbnail(url: String?): String? {
             if (url.isNullOrBlank()) return url
             var result = url
-            if (result.contains("/default.jpg")) result = result.replace("/default.jpg", "/maxresdefault.jpg")
-            if (result.contains("/mqdefault.jpg")) result = result.replace("/mqdefault.jpg", "/maxresdefault.jpg")
-            if (result.contains("/hqdefault.jpg")) result = result.replace("/hqdefault.jpg", "/maxresdefault.jpg")
-            if (result.contains("/sddefault.jpg")) result = result.replace("/sddefault.jpg", "/maxresdefault.jpg")
-            if (result.contains("hq720.jpg")) result = result.replace("hq720.jpg", "maxresdefault.jpg")
+            // Mejorar miniaturas de baja calidad a hqdefault (480x360), garantizada en todo YouTube.
+            // NO forzar maxresdefault.jpg porque devuelve 404 Not Found en pistas de audio y videos < 720p.
+            if (result.contains("/default.jpg")) result = result.replace("/default.jpg", "/hqdefault.jpg")
+            if (result.contains("/mqdefault.jpg")) result = result.replace("/mqdefault.jpg", "/hqdefault.jpg")
+            // Para URLs de avatares de Google/YouTube (=w o =s), aumentar resolución preservando tokens/parámetros
             if (result.contains("=w") || result.contains("=s")) {
-                result = result.replace(Regex("=w\\d+-h\\d+.*"), "=w1024-h1024-l90-rj")
-                    .replace(Regex("=w\\d+.*"), "=w1024-h1024-l90-rj")
-                    .replace(Regex("=s\\d+.*"), "=s1024")
+                result = result.replace(Regex("=w\\d+-h\\d+"), "=w512-h512")
+                    .replace(Regex("=s\\d+"), "=s512")
             }
             return result
         }

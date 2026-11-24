@@ -1,5 +1,6 @@
 package com.fr33music.core.designsystem.component
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
@@ -27,8 +29,6 @@ import com.fr33music.core.designsystem.theme.ColorSurfaceVariant
 import com.fr33music.core.designsystem.theme.Fr33Radius
 import com.fr33music.core.domain.model.Track
 import java.io.File
-
-import androidx.compose.ui.graphics.vector.ImageVector
 
 @Composable
 fun TrackThumbnail(
@@ -44,7 +44,7 @@ fun TrackThumbnail(
     val context = LocalContext.current
     val shape = if (isCircular) CircleShape else RoundedCornerShape(shapeRadius)
 
-    // Si la pista tiene imagen descargada localmente en filesDir/downloads/{trackId}.jpg, usarla prioritariamente
+    // 1. Prioridad: carátula descargada localmente en filesDir/downloads/{trackId}.jpg
     val localFile: File? = remember(trackId) {
         if (!trackId.isNullOrBlank()) {
             val file = File(context.filesDir, "downloads/$trackId.jpg")
@@ -52,31 +52,16 @@ fun TrackThumbnail(
         } else null
     }
 
-    val hdUrl = remember(thumbnailUrl) {
-        Track.upgradeThumbnail(thumbnailUrl)
-    }
-
-    val sdFallbackUrl = remember(hdUrl) {
-        if (hdUrl?.contains("/maxresdefault.jpg") == true) {
-            hdUrl.replace("/maxresdefault.jpg", "/sddefault.jpg")
-        } else {
-            null
-        }
-    }
-
-    val hqFallbackUrl = remember(hdUrl) {
-        if (hdUrl?.contains("/maxresdefault.jpg") == true) {
-            hdUrl.replace("/maxresdefault.jpg", "/hqdefault.jpg")
-        } else {
-            null
-        }
-    }
-
-    val imageModel: Any? = remember(hdUrl, localFile, trackId) {
+    // 2. Determinar el modelo de imagen seguro (manejo de paths locales obsoletos y URLs remotas)
+    val imageModel: Any? = remember(thumbnailUrl, localFile, trackId) {
         if (localFile != null && localFile.exists() && localFile.length() > 0) {
             localFile
-        } else if (hdUrl?.startsWith("file:") == true) {
-            val path = android.net.Uri.parse(hdUrl).path ?: hdUrl.removePrefix("file://")
+        } else if (thumbnailUrl?.startsWith("file:") == true || thumbnailUrl?.startsWith("/") == true) {
+            val path = try {
+                Uri.parse(thumbnailUrl).path ?: thumbnailUrl.removePrefix("file://")
+            } catch (e: Exception) {
+                thumbnailUrl.removePrefix("file://")
+            }
             val f = File(path)
             if (f.exists() && f.length() > 0) {
                 f
@@ -85,8 +70,21 @@ fun TrackThumbnail(
             } else {
                 null
             }
+        } else if (!thumbnailUrl.isNullOrBlank()) {
+            Track.upgradeThumbnail(thumbnailUrl)
+        } else if (!trackId.isNullOrBlank()) {
+            "https://i.ytimg.com/vi/$trackId/hqdefault.jpg"
         } else {
-            hdUrl
+            null
+        }
+    }
+
+    // Fallback garantizado de YouTube si la imagen primaria falla (ej: URLs caídas o 404)
+    val youtubeFallbackUrl: String? = remember(trackId, imageModel) {
+        if (!trackId.isNullOrBlank() && imageModel != "https://i.ytimg.com/vi/$trackId/hqdefault.jpg") {
+            "https://i.ytimg.com/vi/$trackId/hqdefault.jpg"
+        } else {
+            null
         }
     }
 
@@ -116,64 +114,18 @@ fun TrackThumbnail(
             ElegantPlaceholder(size = size, isCircular = isCircular, fallbackIcon = fallbackIcon)
         },
         error = {
-            if (sdFallbackUrl != null) {
-                // Reintento 1: calidad SD si maxresdefault devolvió 404
+            if (youtubeFallbackUrl != null) {
                 SubcomposeAsyncImage(
                     model = ImageRequest.Builder(context)
-                        .data(sdFallbackUrl)
+                        .data(youtubeFallbackUrl)
                         .crossfade(true)
                         .build(),
                     contentDescription = contentDescription,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
-                    error = {
-                        if (hqFallbackUrl != null) {
-                            // Reintento 2: calidad HQ si SD también falló
-                            SubcomposeAsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(hqFallbackUrl)
-                                    .crossfade(true)
-                                    .build(),
-                                contentDescription = contentDescription,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
-                                error = {
-                                    if (localFile != null) {
-                                        SubcomposeAsyncImage(
-                                            model = localFile,
-                                            contentDescription = contentDescription,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize(),
-                                            error = {
-                                                ElegantPlaceholder(size = size, isCircular = isCircular, fallbackIcon = fallbackIcon)
-                                            }
-                                        )
-                                    } else {
-                                        ElegantPlaceholder(size = size, isCircular = isCircular, fallbackIcon = fallbackIcon)
-                                    }
-                                }
-                            )
-                        } else if (localFile != null) {
-                            SubcomposeAsyncImage(
-                                model = localFile,
-                                contentDescription = contentDescription,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
-                                error = {
-                                    ElegantPlaceholder(size = size, isCircular = isCircular, fallbackIcon = fallbackIcon)
-                                }
-                            )
-                        } else {
-                            ElegantPlaceholder(size = size, isCircular = isCircular, fallbackIcon = fallbackIcon)
-                        }
-                    }
-                )
-            } else if (localFile != null) {
-                SubcomposeAsyncImage(
-                    model = localFile,
-                    contentDescription = contentDescription,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
+                    loading = {
+                        ElegantPlaceholder(size = size, isCircular = isCircular, fallbackIcon = fallbackIcon)
+                    },
                     error = {
                         ElegantPlaceholder(size = size, isCircular = isCircular, fallbackIcon = fallbackIcon)
                     }

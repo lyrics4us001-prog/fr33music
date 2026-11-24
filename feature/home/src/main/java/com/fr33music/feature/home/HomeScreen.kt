@@ -72,7 +72,6 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var showConfirmClearAudiosDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(uiState.showNoUpdateToast) {
         if (uiState.showNoUpdateToast) {
@@ -113,15 +112,6 @@ fun HomeScreen(
                     text = "Fr33Music",
                     style = Fr33Typography.headlineMedium,
                     color = ColorTextPrimary
-                )
-            }
-
-            IconButton(onClick = viewModel::openSettings) {
-                Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = "Ajustes",
-                    tint = ColorTextSecondary,
-                    modifier = Modifier.size(26.dp)
                 )
             }
         }
@@ -210,172 +200,6 @@ fun HomeScreen(
                 }
             }
         }
-    }
-
-    // Diálogo de Ajustes
-    if (uiState.showSettings) {
-        AlertDialog(
-            onDismissRequest = viewModel::closeSettings,
-            containerColor = ColorSurface,
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = null,
-                        tint = ColorPrimary
-                    )
-                    Spacer(modifier = Modifier.width(Fr33Spacing.small))
-                    Text(text = "Ajustes", color = ColorTextPrimary, style = Fr33Typography.titleLarge)
-                }
-            },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "Fr33Music v${uiState.appVersion}",
-                        style = Fr33Typography.titleMedium,
-                        color = ColorTextPrimary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "NewPipeExtractor: v${uiState.extractorVersion}",
-                        style = Fr33Typography.bodyMedium,
-                        color = ColorTextSecondary
-                    )
-
-                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
-                    HorizontalDivider(color = ColorDivider, thickness = 0.5.dp)
-                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
-
-                    // Sección Actualizaciones
-                    Text(
-                        text = "Actualizaciones",
-                        style = Fr33Typography.titleSmall,
-                        color = ColorPrimary
-                    )
-                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
-
-                    Button(
-                        onClick = viewModel::checkForUpdates,
-                        enabled = !uiState.isCheckingUpdate && !uiState.isDownloadingUpdate,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(Fr33Radius.medium),
-                        colors = ButtonDefaults.buttonColors(containerColor = ColorPrimary)
-                    ) {
-                        if (uiState.isCheckingUpdate) {
-                            CircularProgressIndicator(
-                                color = ColorTextPrimary,
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(Fr33Spacing.small))
-                            Text(text = "Buscando actualizaciones...", color = ColorTextPrimary)
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.SystemUpdate,
-                                contentDescription = null,
-                                tint = ColorTextPrimary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(Fr33Spacing.small))
-                            Text(text = "Buscar actualizaciones", color = ColorTextPrimary)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
-                    HorizontalDivider(color = ColorDivider, thickness = 0.5.dp)
-                    Spacer(modifier = Modifier.height(Fr33Spacing.medium))
-
-                    OutlinedButton(
-                        onClick = viewModel::clearSearchHistory,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(Fr33Radius.medium)
-                    ) {
-                        Text(text = "Limpiar historial de búsqueda", color = ColorTextPrimary)
-                    }
-
-                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
-
-                    OutlinedButton(
-                        onClick = viewModel::clearAppCache,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(Fr33Radius.medium)
-                    ) {
-                        Text(text = "Limpiar caché de red e imágenes", color = ColorTextPrimary)
-                    }
-
-                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
-
-                    OutlinedButton(
-                        onClick = { showConfirmClearAudiosDialog = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(Fr33Radius.medium),
-                        border = BorderStroke(1.dp, ColorError.copy(alpha = 0.6f))
-                    ) {
-                        Text(text = "Liberar espacio (Borrar audios descargados)", color = ColorError)
-                    }
-
-                    Spacer(modifier = Modifier.height(Fr33Spacing.small))
-
-                    OutlinedButton(
-                        onClick = {
-                            val crashFile = File(context.filesDir, "last_crash.txt")
-                            if (crashFile.exists() && crashFile.length() > 0) {
-                                try {
-                                    val crashContent = crashFile.readText()
-                                    val uri = try {
-                                        FileProvider.getUriForFile(
-                                            context,
-                                            "${context.packageName}.fileprovider",
-                                            crashFile
-                                        )
-                                    } catch (_: Exception) {
-                                        null
-                                    }
-
-                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_SUBJECT, "Fr33Music - Registro de error")
-                                        putExtra(Intent.EXTRA_TEXT, crashContent)
-                                        if (uri != null) {
-                                            putExtra(Intent.EXTRA_STREAM, uri)
-                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                        }
-                                    }
-                                    val chooser = Intent.createChooser(sendIntent, "Compartir último registro de errores").apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    context.startActivity(chooser)
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "Error al compartir log: ${e.message}", Toast.LENGTH_SHORT).show()
-                                }
-                            } else {
-                                Toast.makeText(context, "No hay errores registrados", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(Fr33Radius.medium)
-                    ) {
-                        Text(text = "Compartir último registro de errores", color = ColorTextPrimary)
-                    }
-
-                    if (uiState.cacheClearedMessage != null) {
-                        Spacer(modifier = Modifier.height(Fr33Spacing.small))
-                        Text(
-                            text = uiState.cacheClearedMessage.orEmpty(),
-                            style = Fr33Typography.labelMedium,
-                            color = ColorPrimary,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = viewModel::closeSettings) {
-                    Text(text = "Cerrar", color = ColorPrimary)
-                }
-            }
-        )
     }
 
     // Diálogo de Actualización disponible
@@ -469,38 +293,6 @@ fun HomeScreen(
                     TextButton(onClick = viewModel::dismissUpdateDialog) {
                         Text(text = "Cancelar", color = ColorTextSecondary)
                     }
-                }
-            }
-        )
-    }
-
-    if (showConfirmClearAudiosDialog) {
-        AlertDialog(
-            onDismissRequest = { showConfirmClearAudiosDialog = false },
-            containerColor = ColorSurface,
-            title = {
-                Text(text = "Liberar espacio", color = ColorTextPrimary, style = Fr33Typography.titleMedium)
-            },
-            text = {
-                Text(
-                    text = "Se borrarán los archivos de audio descargados, pero tus playlists y favoritos se mantendrán intactos. ¿Continuar?",
-                    color = ColorTextSecondary,
-                    style = Fr33Typography.bodyMedium
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.clearAllDownloadedAudios()
-                        showConfirmClearAudiosDialog = false
-                    }
-                ) {
-                    Text("Continuar", color = ColorError)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfirmClearAudiosDialog = false }) {
-                    Text("Cancelar", color = ColorTextSecondary)
                 }
             }
         )

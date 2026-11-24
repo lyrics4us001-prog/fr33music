@@ -1,6 +1,5 @@
 package com.fr33music.core.player
 
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -16,9 +15,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
-import androidx.media3.session.SessionToken
 import com.fr33music.core.data.AudioCacheManager
 import com.fr33music.core.database.datastore.QueueDataStore
 import com.fr33music.core.domain.model.Track
@@ -71,10 +68,6 @@ class PlayerRepositoryImpl @Inject constructor(
         Log.i("PlayerRepo", "MediaSession desvinculada de PlayerRepository")
     }
 
-    private var mediaController: MediaController? = null
-    private var isConnectingController = false
-    private val pendingControllerActions = mutableListOf<(MediaController) -> Unit>()
-
     private var progressJob: Job? = null
     private val playedTrackIds = mutableSetOf<String>()
     private val shuffleHistory = ArrayDeque<Track>()
@@ -83,9 +76,8 @@ class PlayerRepositoryImpl @Inject constructor(
         // 1. Configurar repeatMode por defecto a REPEAT_MODE_ALL para que hasNextMediaItem() siempre sea true
         exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
 
-        // 2. Iniciar servicio y conectar MediaController
+        // 2. Iniciar servicio para gestión de MediaSession y controles de notificación
         ensureServiceRunning()
-        connectMediaController()
 
         // 3. Escuchar cambios de ExoPlayer directamente para sincronización inmediata de UI
         setupPlayerListener(exoPlayer)
@@ -104,52 +96,13 @@ class PlayerRepositoryImpl @Inject constructor(
                         isPlaying = false
                     )
                 }
+                exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
                 exoPlayer.shuffleModeEnabled = savedState.isShuffle
-                withController {
-                    it.repeatMode = Player.REPEAT_MODE_ALL
-                    it.shuffleModeEnabled = savedState.isShuffle
-                }
+                val mediaItems = savedState.queue.map { trackToMediaItem(it) }
+                exoPlayer.setMediaItems(mediaItems, validIndex, savedState.positionMs)
+                exoPlayer.prepare()
             }
         }
-    }
-
-    private fun withController(action: (MediaController) -> Unit) {
-        val controller = mediaController
-        if (controller != null && controller.isConnected) {
-            action(controller)
-        } else {
-            pendingControllerActions.add(action)
-            connectMediaController()
-        }
-    }
-
-    private fun connectMediaController() {
-        if (isConnectingController) return
-        val currentCtrl = mediaController
-        if (currentCtrl != null && currentCtrl.isConnected) return
-
-        isConnectingController = true
-        ensureServiceRunning()
-
-        val sessionToken = SessionToken(context, ComponentName(context, Fr33MusicPlayerService::class.java))
-        val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
-        controllerFuture.addListener({
-            isConnectingController = false
-            try {
-                val controller = controllerFuture.get()
-                mediaController = controller
-                controller.repeatMode = Player.REPEAT_MODE_ALL
-                controller.shuffleModeEnabled = _playbackState.value.isShuffle
-                setupPlayerListener(controller)
-                Log.i("PlayerRepo", "MediaController conectado exitosamente con Fr33MusicPlayerService (repeatMode=ALL, shuffle=${_playbackState.value.isShuffle})")
-
-                val actions = ArrayList(pendingControllerActions)
-                pendingControllerActions.clear()
-                actions.forEach { it(controller) }
-            } catch (e: Exception) {
-                Log.e("PlayerRepo", "Error al conectar MediaController: ${e.message}", e)
-            }
-        }, ContextCompat.getMainExecutor(context))
     }
 
     private fun setupPlayerListener(playerTarget: Player) {
@@ -204,24 +157,24 @@ class PlayerRepositoryImpl @Inject constructor(
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                val mediaId = mediaItem?.mediaId
+                if (mediaItem == null) return
+                val mediaId = mediaItem.mediaId
                 val currentQueue = _playbackState.value.queue
-                val foundIndex = if (!mediaId.isNullOrBlank()) {
+                val foundIndex = if (mediaId.isNotBlank()) {
                     currentQueue.indexOfFirst { it.trackId == mediaId }
                 } else {
                     playerTarget.currentMediaItemIndex
                 }
                 val validIndex = if (foundIndex in currentQueue.indices) foundIndex else playerTarget.currentMediaItemIndex
 
-                _playbackState.update { current ->
-                    val track = current.queue.getOrNull(validIndex)
-                    current.copy(
-                        currentIndex = validIndex,
-                        durationMs = track?.durationMs?.takeIf { it > 0L } ?: current.durationMs
-                    )
-                }
-
                 if (validIndex in currentQueue.indices) {
+                    _playbackState.update { current ->
+                        val track = current.queue.getOrNull(validIndex)
+                        current.copy(
+                            currentIndex = validIndex,
+                            durationMs = track?.durationMs?.takeIf { it > 0L } ?: current.durationMs
+                        )
+                    }
                     playedTrackIds.add(currentQueue[validIndex].trackId)
                     repositoryScope.launch(Dispatchers.IO) {
                         queueDataStore.saveCurrentIndex(validIndex)
@@ -250,7 +203,7 @@ class PlayerRepositoryImpl @Inject constructor(
 
             override fun onRepeatModeChanged(repeatMode: Int) {
                 if (repeatMode != Player.REPEAT_MODE_ALL) {
-                    withController { it.repeatMode = Player.REPEAT_MODE_ALL }
+                    exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
                 }
             }
 
@@ -332,19 +285,19 @@ class PlayerRepositoryImpl @Inject constructor(
             queueDataStore.saveQueue(newQueue, targetIndex, _playbackState.value.isShuffle)
         }
 
+        ensureServiceRunning()
+
         withContext(Dispatchers.Main) {
-            withController { controller ->
-                controller.repeatMode = Player.REPEAT_MODE_ALL
-                controller.shuffleModeEnabled = _playbackState.value.isShuffle
-                if (existingIndex >= 0 && controller.mediaItemCount == newQueue.size) {
-                    controller.seekTo(targetIndex, 0L)
-                    controller.play()
-                } else {
-                    val mediaItems = newQueue.map { trackToMediaItem(it) }
-                    controller.setMediaItems(mediaItems, targetIndex, 0L)
-                    controller.prepare()
-                    controller.play()
-                }
+            exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
+            exoPlayer.shuffleModeEnabled = _playbackState.value.isShuffle
+            if (existingIndex >= 0 && exoPlayer.mediaItemCount == newQueue.size) {
+                exoPlayer.seekTo(targetIndex, 0L)
+                exoPlayer.play()
+            } else {
+                val mediaItems = newQueue.map { trackToMediaItem(it) }
+                exoPlayer.setMediaItems(mediaItems, targetIndex, 0L)
+                exoPlayer.prepare()
+                exoPlayer.play()
             }
         }
     }
@@ -366,38 +319,37 @@ class PlayerRepositoryImpl @Inject constructor(
             queueDataStore.saveQueue(list, validIndex, _playbackState.value.isShuffle)
         }
 
+        ensureServiceRunning()
+
         val mediaItems = list.map { trackToMediaItem(it) }
 
         withContext(Dispatchers.Main) {
-            withController { controller ->
-                controller.repeatMode = Player.REPEAT_MODE_ALL
-                controller.shuffleModeEnabled = _playbackState.value.isShuffle
-                controller.setMediaItems(mediaItems, validIndex, 0L)
-                controller.prepare()
-                controller.play()
-            }
+            exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
+            exoPlayer.shuffleModeEnabled = _playbackState.value.isShuffle
+            exoPlayer.setMediaItems(mediaItems, validIndex, 0L)
+            exoPlayer.prepare()
+            exoPlayer.play()
         }
     }
 
     override fun togglePlayPause() {
-        withController { controller ->
-            if (controller.isPlaying || controller.playWhenReady) {
-                controller.pause()
-            } else {
-                if (controller.playbackState == Player.STATE_IDLE || controller.mediaItemCount == 0) {
-                    val queue = _playbackState.value.queue
-                    if (queue.isNotEmpty()) {
-                        val index = _playbackState.value.currentIndex.coerceIn(0, queue.lastIndex)
-                        val mediaItems = queue.map { trackToMediaItem(it) }
-                        controller.repeatMode = Player.REPEAT_MODE_ALL
-                        controller.shuffleModeEnabled = _playbackState.value.isShuffle
-                        controller.setMediaItems(mediaItems, index, _playbackState.value.positionMs)
-                        controller.prepare()
-                        controller.play()
-                    }
-                } else {
-                    controller.play()
+        ensureServiceRunning()
+        if (exoPlayer.isPlaying || exoPlayer.playWhenReady) {
+            exoPlayer.pause()
+        } else {
+            if (exoPlayer.playbackState == Player.STATE_IDLE || exoPlayer.mediaItemCount == 0) {
+                val queue = _playbackState.value.queue
+                if (queue.isNotEmpty()) {
+                    val index = _playbackState.value.currentIndex.coerceIn(0, queue.lastIndex)
+                    val mediaItems = queue.map { trackToMediaItem(it) }
+                    exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
+                    exoPlayer.shuffleModeEnabled = _playbackState.value.isShuffle
+                    exoPlayer.setMediaItems(mediaItems, index, _playbackState.value.positionMs)
+                    exoPlayer.prepare()
+                    exoPlayer.play()
                 }
+            } else {
+                exoPlayer.play()
             }
         }
     }
@@ -405,9 +357,7 @@ class PlayerRepositoryImpl @Inject constructor(
     override fun toggleShuffle() {
         val newShuffle = !_playbackState.value.isShuffle
         _playbackState.update { it.copy(isShuffle = newShuffle) }
-        withController { controller ->
-            controller.shuffleModeEnabled = newShuffle
-        }
+        exoPlayer.shuffleModeEnabled = newShuffle
         repositoryScope.launch {
             queueDataStore.saveShuffle(newShuffle)
         }
@@ -418,19 +368,17 @@ class PlayerRepositoryImpl @Inject constructor(
         if (state.queue.isEmpty()) return
 
         withContext(Dispatchers.Main) {
-            withController { controller ->
-                if (controller.mediaItemCount != state.queue.size) {
-                    val mediaItems = state.queue.map { trackToMediaItem(it) }
-                    val nextIdx = (state.currentIndex + 1) % state.queue.size
-                    controller.repeatMode = Player.REPEAT_MODE_ALL
-                    controller.shuffleModeEnabled = state.isShuffle
-                    controller.setMediaItems(mediaItems, nextIdx, 0L)
-                    controller.prepare()
-                    controller.play()
-                } else {
-                    controller.seekToNextMediaItem()
-                    controller.play()
-                }
+            if (exoPlayer.mediaItemCount != state.queue.size) {
+                val mediaItems = state.queue.map { trackToMediaItem(it) }
+                val nextIdx = (state.currentIndex + 1) % state.queue.size
+                exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
+                exoPlayer.shuffleModeEnabled = state.isShuffle
+                exoPlayer.setMediaItems(mediaItems, nextIdx, 0L)
+                exoPlayer.prepare()
+                exoPlayer.play()
+            } else {
+                exoPlayer.seekToNextMediaItem()
+                exoPlayer.play()
             }
         }
     }
@@ -440,55 +388,51 @@ class PlayerRepositoryImpl @Inject constructor(
         if (state.queue.isEmpty()) return
 
         withContext(Dispatchers.Main) {
-            withController { controller ->
-                val currentPos = try { controller.currentPosition } catch (e: Exception) { 0L }
-                if (currentPos > 3000L) {
-                    controller.seekTo(0L)
-                    controller.play()
-                    return@withController
-                }
+            val currentPos = try { exoPlayer.currentPosition } catch (e: Exception) { 0L }
+            if (currentPos > 3000L) {
+                exoPlayer.seekTo(0L)
+                exoPlayer.play()
+                return@withContext
+            }
 
-                if (controller.mediaItemCount != state.queue.size) {
-                    val mediaItems = state.queue.map { trackToMediaItem(it) }
-                    val prevIdx = if (state.currentIndex > 0) state.currentIndex - 1 else state.queue.lastIndex
-                    controller.repeatMode = Player.REPEAT_MODE_ALL
-                    controller.shuffleModeEnabled = state.isShuffle
-                    controller.setMediaItems(mediaItems, prevIdx, 0L)
-                    controller.prepare()
-                    controller.play()
-                } else {
-                    controller.seekToPreviousMediaItem()
-                    controller.play()
-                }
+            if (exoPlayer.mediaItemCount != state.queue.size) {
+                val mediaItems = state.queue.map { trackToMediaItem(it) }
+                val prevIdx = if (state.currentIndex > 0) state.currentIndex - 1 else state.queue.lastIndex
+                exoPlayer.repeatMode = Player.REPEAT_MODE_ALL
+                exoPlayer.shuffleModeEnabled = state.isShuffle
+                exoPlayer.setMediaItems(mediaItems, prevIdx, 0L)
+                exoPlayer.prepare()
+                exoPlayer.play()
+            } else {
+                exoPlayer.seekToPreviousMediaItem()
+                exoPlayer.play()
             }
         }
     }
 
     override fun seekTo(positionMs: Long) {
-        withController { controller ->
-            try {
-                val totalDuration = _playbackState.value.durationMs.takeIf { it > 0L }
-                    ?: _playbackState.value.currentTrack?.durationMs?.takeIf { it > 0L }
-                    ?: try {
-                        val d = controller.duration
-                        if (d > 0L && d != C.TIME_UNSET) d else null
-                    } catch (_: Exception) { null }
+        try {
+            val totalDuration = _playbackState.value.durationMs.takeIf { it > 0L }
+                ?: _playbackState.value.currentTrack?.durationMs?.takeIf { it > 0L }
+                ?: try {
+                    val d = exoPlayer.duration
+                    if (d > 0L && d != C.TIME_UNSET) d else null
+                } catch (_: Exception) { null }
 
-                val validPos = when {
-                    positionMs < 0L -> 0L
-                    totalDuration != null && totalDuration > 1000L && positionMs >= totalDuration -> (totalDuration - 1000L).coerceAtLeast(0L)
-                    totalDuration != null && positionMs > totalDuration -> (totalDuration - 1000L).coerceAtLeast(0L)
-                    else -> positionMs.coerceAtLeast(0L)
-                }
-
-                controller.seekTo(validPos)
-                _playbackState.update { it.copy(positionMs = validPos) }
-                repositoryScope.launch(Dispatchers.IO) {
-                    queueDataStore.savePlaybackPosition(validPos)
-                }
-            } catch (e: Exception) {
-                Log.w("PlayerRepo", "Error en seekTo($positionMs): ${e.message}", e)
+            val validPos = when {
+                positionMs < 0L -> 0L
+                totalDuration != null && totalDuration > 1000L && positionMs >= totalDuration -> (totalDuration - 1000L).coerceAtLeast(0L)
+                totalDuration != null && positionMs > totalDuration -> (totalDuration - 1000L).coerceAtLeast(0L)
+                else -> positionMs.coerceAtLeast(0L)
             }
+
+            exoPlayer.seekTo(validPos)
+            _playbackState.update { it.copy(positionMs = validPos) }
+            repositoryScope.launch(Dispatchers.IO) {
+                queueDataStore.savePlaybackPosition(validPos)
+            }
+        } catch (e: Exception) {
+            Log.w("PlayerRepo", "Error en seekTo($positionMs): ${e.message}", e)
         }
     }
 
@@ -511,7 +455,7 @@ class PlayerRepositoryImpl @Inject constructor(
         progressJob = repositoryScope.launch(Dispatchers.Main) {
             var counter = 0
             while (isActive) {
-                val playerTarget = mediaController ?: exoPlayer
+                val playerTarget = exoPlayer
                 val currentPos = try { playerTarget.currentPosition.coerceAtLeast(0L) } catch (e: Exception) { 0L }
                 val currentDur = try {
                     val d = playerTarget.duration
@@ -531,6 +475,7 @@ class PlayerRepositoryImpl @Inject constructor(
                         queue = updatedQueue
                     )
                 }
+
                 counter++
                 if (counter % 4 == 0) {
                     launch(Dispatchers.IO) {

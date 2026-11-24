@@ -55,7 +55,7 @@ class NewPipeSearchSource(
                             ?: item.thumbnails?.firstOrNull()?.url
                     } catch (_: Exception) { null }
                     val thumbUrl = Track.upgradeThumbnail(rawThumb)
-                    val title = item.name?.takeIf { it.isNotBlank() } ?: "Desconocido"
+                    val title = item.name?.takeIf { it.isNotBlank() && !it.startsWith("Pista ") } ?: "Desconocido"
                     val artist = item.uploaderName?.takeIf { it.isNotBlank() } ?: "Artista Desconocido"
                     val duration = try { if (item.duration > 0) item.duration * 1000L else 0L } catch (_: Exception) { 0L }
                     tracks.add(
@@ -171,8 +171,8 @@ class NewPipeSearchSource(
                                     ?: item.thumbnails?.firstOrNull()?.url
                             } catch (_: Exception) { null }
                             val thumb = Track.upgradeThumbnail(rawThumb)
-                            val title = item.name?.takeIf { it.isNotBlank() } ?: "Desconocido"
-                            val artist = item.uploaderName?.takeIf { it.isNotBlank() } ?: "Desconocido"
+                            val title = item.name?.takeIf { it.isNotBlank() && !it.startsWith("Pista ") } ?: "Desconocido"
+                            val artist = item.uploaderName?.takeIf { it.isNotBlank() } ?: "Artista Desconocido"
                             val duration = try { if (item.duration > 0) item.duration * 1000L else 0L } catch (_: Exception) { 0L }
                             videos.add(
                                 Track(
@@ -297,8 +297,8 @@ class NewPipeSearchSource(
                                             ?: item.thumbnails?.firstOrNull()?.url
                                     } catch (_: Exception) { null }
                                     val thumb = Track.upgradeThumbnail(rawThumb)
-                                    val title = item.name?.takeIf { it.isNotBlank() } ?: "Desconocido"
-                                    val artist = item.uploaderName?.takeIf { it.isNotBlank() } ?: channel.name
+                                    val title = item.name?.takeIf { it.isNotBlank() && !it.startsWith("Pista ") } ?: "Desconocido"
+                                    val artist = item.uploaderName?.takeIf { it.isNotBlank() } ?: channel.name.takeIf { it.isNotBlank() } ?: "Artista Desconocido"
                                     val duration = try { if (item.duration > 0) item.duration * 1000L else 0L } catch (_: Exception) { 0L }
                                     tracks.add(
                                         Track(
@@ -369,10 +369,10 @@ class NewPipeSearchSource(
                         return@withContext Result.success(listOf(
                             Track(
                                 trackId = id,
-                                title = album.title,
-                                artistName = album.artistName,
+                                title = album.title.takeIf { it.isNotBlank() && !it.startsWith("Pista ") } ?: "Desconocido",
+                                artistName = album.artistName.takeIf { it.isNotBlank() } ?: "Artista Desconocido",
                                 albumName = album.title,
-                                durationMs = duration,
+                                durationMs = if (duration > 0) duration else 0L,
                                 thumbnailUrl = album.thumbnailUrl
                             )
                         ))
@@ -398,8 +398,8 @@ class NewPipeSearchSource(
                                 ?: album.thumbnailUrl
                         } catch (_: Exception) { album.thumbnailUrl }
                         val thumbUrl = Track.upgradeThumbnail(rawThumb)
-                        val title = item.name?.takeIf { it.isNotBlank() } ?: "Desconocido"
-                        val artist = item.uploaderName?.takeIf { it.isNotBlank() } ?: album.artistName
+                        val title = item.name?.takeIf { it.isNotBlank() && !it.startsWith("Pista ") } ?: "Desconocido"
+                        val artist = item.uploaderName?.takeIf { it.isNotBlank() } ?: album.artistName.takeIf { it.isNotBlank() } ?: "Artista Desconocido"
                         val duration = try { if (item.duration > 0) item.duration * 1000L else 0L } catch (_: Exception) { 0L }
                         val track = Track(
                             trackId = id,
@@ -432,6 +432,22 @@ class NewPipeSearchSource(
                 it.copy(albumName = album.title)
             }
             Result.success(fallbackTracks)
+        }
+    }
+
+    override suspend fun getSuggestions(
+        query: String
+    ): Result<List<String>> = withContext(Dispatchers.IO) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            return@withContext Result.success(emptyList())
+        }
+        try {
+            val suggestions = ServiceList.YouTube.suggestionExtractor?.suggestionList(trimmed) ?: emptyList()
+            Result.success(suggestions)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error obteniendo sugerencias para '$trimmed': ${e.message}")
+            Result.success(emptyList())
         }
     }
 

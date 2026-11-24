@@ -14,6 +14,9 @@ interface ArtistDao {
     @Query("SELECT * FROM artists ORDER BY name ASC")
     fun getAllArtists(): Flow<List<ArtistEntity>>
 
+    @Query("SELECT * FROM artists ORDER BY name ASC")
+    suspend fun getAllArtistsSync(): List<ArtistEntity>
+
     @Query("SELECT * FROM artists WHERE name = :name LIMIT 1")
     suspend fun getArtistSync(name: String): ArtistEntity?
 

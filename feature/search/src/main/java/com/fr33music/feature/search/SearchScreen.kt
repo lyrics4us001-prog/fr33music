@@ -32,9 +32,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
@@ -44,6 +46,8 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -111,6 +115,8 @@ fun SearchScreen(
     val channelVideos by viewModel.channelVideos.collectAsStateWithLifecycle()
     val isLoadingChannel by viewModel.isLoadingChannel.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
+    val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
     var songForPlaylistDialog by remember { mutableStateOf<Track?>(null) }
     var bulkTracksForPlaylistDialog by remember { mutableStateOf<List<Track>?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
@@ -358,6 +364,21 @@ fun SearchScreen(
                         onRetry = viewModel::retry
                     )
                 }
+            }
+
+            // Sugerencias e historial flotante cuando la barra de búsqueda está activa
+            if (isSearchFocused && (recentSearches.isNotEmpty() || suggestions.isNotEmpty())) {
+                SearchSuggestionsOverlay(
+                    recentSearches = recentSearches,
+                    suggestions = suggestions,
+                    onSelectQuery = { selectedQuery ->
+                        clearSearchFocus()
+                        viewModel.search(selectedQuery)
+                    },
+                    onDeleteRecent = { itemQuery ->
+                        viewModel.deleteSearchHistoryItem(itemQuery)
+                    }
+                )
             }
         }
     }
@@ -837,22 +858,6 @@ private fun SearchChannelDetailView(
                             color = ColorTextPrimary,
                             modifier = Modifier.weight(1f)
                         )
-                        if (filteredVideos.isNotEmpty()) {
-                            IconButton(onClick = { onPlayAll(filteredVideos, false) }) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = "Reproducir todo",
-                                    tint = ColorPrimary
-                                )
-                            }
-                            IconButton(onClick = { onPlayAll(filteredVideos, true) }) {
-                                Icon(
-                                    imageVector = Icons.Default.Shuffle,
-                                    contentDescription = "Aleatorio",
-                                    tint = ColorPrimary
-                                )
-                            }
-                        }
                     }
                 }
             }
@@ -1430,4 +1435,126 @@ private fun AddToPlaylistDialog(
         },
         containerColor = ColorSurface
     )
+}
+
+@Composable
+private fun SearchSuggestionsOverlay(
+    recentSearches: List<String>,
+    suggestions: List<String>,
+    onSelectQuery: (String) -> Unit,
+    onDeleteRecent: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Fr33Spacing.large)
+            .padding(bottom = Fr33Spacing.medium),
+        colors = CardDefaults.cardColors(containerColor = ColorSurface),
+        shape = RoundedCornerShape(Fr33Radius.large),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = Fr33Spacing.small)
+        ) {
+            // 1. Historial de búsquedas recientes (máximo 3)
+            if (recentSearches.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "Búsquedas recientes",
+                        style = Fr33Typography.labelSmall,
+                        color = ColorTextTertiary,
+                        modifier = Modifier.padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.extraSmall)
+                    )
+                }
+
+                items(recentSearches, key = { "recent_$it" }) { itemQuery ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectQuery(itemQuery) }
+                            .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.small),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.History,
+                            contentDescription = "Historial",
+                            tint = ColorTextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                        Text(
+                            text = itemQuery,
+                            style = Fr33Typography.bodyMedium,
+                            color = ColorTextPrimary,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        IconButton(
+                            onClick = { onDeleteRecent(itemQuery) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Eliminar de historial",
+                                tint = ColorTextTertiary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 2. Sugerencias de YouTube en tiempo real
+            if (suggestions.isNotEmpty()) {
+                if (recentSearches.isNotEmpty()) {
+                    item {
+                        HorizontalDivider(
+                            color = ColorDivider,
+                            thickness = 0.5.dp,
+                            modifier = Modifier.padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.extraSmall)
+                        )
+                    }
+                }
+
+                item {
+                    Text(
+                        text = "Sugerencias de YouTube",
+                        style = Fr33Typography.labelSmall,
+                        color = ColorTextTertiary,
+                        modifier = Modifier.padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.extraSmall)
+                    )
+                }
+
+                items(suggestions, key = { "suggestion_$it" }) { suggestion ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectQuery(suggestion) }
+                            .padding(horizontal = Fr33Spacing.large, vertical = Fr33Spacing.small),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "Sugerencia",
+                            tint = ColorTextSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(Fr33Spacing.medium))
+                        Text(
+                            text = suggestion,
+                            style = Fr33Typography.bodyMedium,
+                            color = ColorTextPrimary,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
 }

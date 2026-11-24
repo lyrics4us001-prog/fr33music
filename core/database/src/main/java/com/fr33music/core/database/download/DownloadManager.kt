@@ -211,11 +211,20 @@ class DownloadManager @Inject constructor(
                     )
                 )
             } else {
-                trackDao.setDownloaded(
-                    id = track.trackId,
-                    isDownloaded = true,
-                    localPath = promotedFile.absolutePath,
-                    format = format
+                val updatedTitle = if (track.title.isNotBlank() && !track.title.startsWith("Pista ") && track.title != "Desconocido") track.title else existingTrack.title
+                val updatedArtist = if (track.artistName.isNotBlank() && track.artistName != "Desconocido" && track.artistName != "Artista Desconocido") track.artistName else existingTrack.artistName
+                val updatedDuration = if (track.durationMs > 0) track.durationMs else existingTrack.durationMs
+                val updatedThumb = if (!track.thumbnailUrl.isNullOrBlank()) track.thumbnailUrl else existingTrack.thumbnailUrl
+                trackDao.updateTrack(
+                    existingTrack.copy(
+                        title = updatedTitle,
+                        artistName = updatedArtist,
+                        durationMs = updatedDuration,
+                        thumbnailUrl = updatedThumb,
+                        isDownloaded = true,
+                        localPath = promotedFile.absolutePath,
+                        format = format
+                    )
                 )
             }
 
@@ -248,8 +257,19 @@ class DownloadManager @Inject constructor(
                     isSaved = false
                 )
             )
-        } else if (existingTrack.thumbnailUrl.isNullOrBlank() && !track.thumbnailUrl.isNullOrBlank()) {
-            trackDao.updateTrack(existingTrack.copy(thumbnailUrl = track.thumbnailUrl))
+        } else {
+            val updatedTitle = if (track.title.isNotBlank() && !track.title.startsWith("Pista ") && track.title != "Desconocido") track.title else existingTrack.title
+            val updatedArtist = if (track.artistName.isNotBlank() && track.artistName != "Desconocido" && track.artistName != "Artista Desconocido") track.artistName else existingTrack.artistName
+            val updatedDuration = if (track.durationMs > 0) track.durationMs else existingTrack.durationMs
+            val updatedThumb = if (!track.thumbnailUrl.isNullOrBlank()) track.thumbnailUrl else existingTrack.thumbnailUrl
+            trackDao.updateTrack(
+                existingTrack.copy(
+                    title = updatedTitle,
+                    artistName = updatedArtist,
+                    durationMs = updatedDuration,
+                    thumbnailUrl = updatedThumb
+                )
+            )
         }
 
         // Upsert en ArtistEntity y AlbumEntity si tienen thumbnail

@@ -14,6 +14,7 @@ import com.fr33music.core.database.entity.AlbumEntity
 import com.fr33music.core.database.entity.ArtistEntity
 import com.fr33music.core.database.entity.DownloadStatus
 import com.fr33music.core.database.entity.TrackEntity
+import com.fr33music.core.database.lyrics.LyricsRepository
 import com.fr33music.core.domain.model.AudioFormat
 import com.fr33music.core.domain.model.Track
 import com.fr33music.core.extractor.StreamResolver
@@ -38,6 +39,7 @@ interface DownloadWorkerEntryPoint {
     fun albumDao(): AlbumDao
     fun downloadDao(): DownloadDao
     fun okHttpClient(): OkHttpClient
+    fun lyricsRepository(): LyricsRepository
 }
 
 class DownloadWorker(
@@ -379,9 +381,22 @@ class DownloadWorker(
                     localPath = outputFile.absolutePath,
                     format = stream.format.name
                 )
+                val updatedTitle = if (title.isNotBlank() && !title.startsWith("Pista ") && title != "Desconocido") title else existing.title
+                val updatedArtist = if (artist.isNotBlank() && artist != "Desconocido" && artist != "Artista Desconocido") artist else existing.artistName
+                val updatedDuration = if (duration > 0) duration else existing.durationMs
                 val updatedThumb = if (!finalThumb.isNullOrBlank()) finalThumb else existing.thumbnailUrl
                 val updatedAlbum = if (!existing.albumName.isNullOrBlank() && !existing.albumName.equals(artist, ignoreCase = true)) existing.albumName else effectiveAlbum
-                trackDao.updateTrack(existing.copy(thumbnailUrl = updatedThumb, albumName = updatedAlbum, isDownloaded = true, localPath = outputFile.absolutePath))
+                trackDao.updateTrack(
+                    existing.copy(
+                        title = updatedTitle,
+                        artistName = updatedArtist,
+                        durationMs = updatedDuration,
+                        thumbnailUrl = updatedThumb,
+                        albumName = updatedAlbum,
+                        isDownloaded = true,
+                        localPath = outputFile.absolutePath
+                    )
+                )
             } else {
                 trackDao.insertTrack(
                     TrackEntity(
@@ -412,6 +427,23 @@ class DownloadWorker(
                 if (existingAlbum == null || existingAlbum.thumbnailUrl.isNullOrBlank() || finalThumb.startsWith("file:")) {
                     albumDao.insertAlbum(AlbumEntity(id = albumId, title = effectiveAlbum, artistName = artist, thumbnailUrl = finalThumb))
                 }
+            }
+
+            // Descargar letras offline automáticamente y guardarlas en Room (LyricsEntity)
+            try {
+                val lyricsRepository = entryPoint.lyricsRepository()
+                val trackForLyrics = Track(
+                    trackId = trackId,
+                    title = title,
+                    artistName = artist,
+                    albumName = effectiveAlbum,
+                    durationMs = duration,
+                    thumbnailUrl = finalThumb
+                )
+                lyricsRepository.getLyrics(trackForLyrics)
+                Log.i(TAG, "DownloadWorker: Letras descargadas y cacheadas para $trackId")
+            } catch (e: Exception) {
+                Log.w(TAG, "DownloadWorker: No se pudieron obtener letras para $trackId: ${e.message}")
             }
 
             Result.success(workDataOf("localPath" to outputFile.absolutePath))

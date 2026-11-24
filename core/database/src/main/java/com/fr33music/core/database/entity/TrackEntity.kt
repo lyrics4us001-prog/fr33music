@@ -25,7 +25,7 @@ data class TrackEntity(
         artistName = artistName,
         albumName = albumName,
         durationMs = durationMs,
-        thumbnailUrl = thumbnailUrl
+        thumbnailUrl = if (thumbnailUrl.isNullOrBlank()) "https://i.ytimg.com/vi/$id/hqdefault.jpg" else thumbnailUrl
     )
 
     companion object {
@@ -41,13 +41,17 @@ data class TrackEntity(
                     !track.albumName.equals("Sencillos", ignoreCase = true) &&
                     !track.albumName.equals("YouTube", ignoreCase = true)
             val effectiveAlbum = if (isRealAlbum) track.albumName!! else "Sencillos"
+            val effectiveThumb = if (track.thumbnailUrl.isNullOrBlank()) "https://i.ytimg.com/vi/${track.trackId}/hqdefault.jpg" else track.thumbnailUrl
+            val effectiveTitle = track.title.takeIf { it.isNotBlank() && !it.startsWith("Pista ") } ?: "Desconocido"
+            val effectiveArtist = track.artistName.takeIf { it.isNotBlank() } ?: "Artista Desconocido"
+            val effectiveDuration = if (track.durationMs > 0) track.durationMs else 0L
             return TrackEntity(
                 id = track.trackId,
-                title = track.title,
-                artistName = track.artistName,
+                title = effectiveTitle,
+                artistName = effectiveArtist,
                 albumName = effectiveAlbum,
-                durationMs = track.durationMs,
-                thumbnailUrl = track.thumbnailUrl,
+                durationMs = effectiveDuration,
+                thumbnailUrl = effectiveThumb,
                 format = format,
                 isDownloaded = isDownloaded,
                 isSaved = isSaved,

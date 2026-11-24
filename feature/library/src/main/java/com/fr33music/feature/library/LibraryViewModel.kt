@@ -15,10 +15,13 @@ import com.fr33music.core.database.entity.PlaylistEntity
 import com.fr33music.core.database.entity.PlaylistSongCrossRef
 import com.fr33music.core.database.entity.TrackEntity
 import com.fr33music.core.database.repository.LibraryRepository
+import com.fr33music.core.domain.model.ArtistBackupDto
+import com.fr33music.core.domain.model.FullLibraryBackupDto
 import com.fr33music.core.domain.model.PlaylistBackupDto
 import com.fr33music.core.domain.model.PlaylistExportDto
 import com.fr33music.core.domain.model.Track
 import com.fr33music.core.domain.model.TrackExportDto
+import com.fr33music.core.extractor.StreamResolver
 import com.fr33music.core.player.PlayerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -78,7 +81,8 @@ class LibraryViewModel @Inject constructor(
     private val playlistDao: PlaylistDao,
     private val downloadRepository: DownloadRepository,
     private val playerRepository: PlayerRepository,
-    private val libraryRepository: LibraryRepository
+    private val libraryRepository: LibraryRepository,
+    private val streamResolver: StreamResolver
 ) : ViewModel() {
 
     private val _selectedTab = MutableStateFlow(LibraryTab.ARTISTS)
@@ -116,18 +120,18 @@ class LibraryViewModel @Inject constructor(
 
     val uiState: StateFlow<LibraryUiState> = combine(
         filterSelection,
-        trackDao.getSavedTracks(),
+        trackDao.getAllTracks(),
         artistDao.getAllArtists(),
         libraryRepository.getPlaylists(),
         playlistSongsFlow
-    ) { filter, savedTracks, artistEntities, playlistsList, playlistSongs ->
-        val allLibraryTracks = savedTracks
+    ) { filter, allTracks, artistEntities, playlistsList, playlistSongs ->
+        val allLibraryTracks = allTracks
 
         // Lista de "Todas las canciones": ordenadas según sortOrder
         val allSongsSorted = when (filter.sortOrder) {
             LibrarySortOrder.RECENTLY_ADDED -> allLibraryTracks.sortedByDescending { it.timestamp }
             LibrarySortOrder.ALPHABETICAL -> allLibraryTracks.sortedWith(
-                compareBy({ it.artistName.lowercase() }, { it.title.lowercase() })
+                compareBy({ it.title.lowercase() }, { it.artistName.lowercase() })
             )
         }
 
@@ -145,19 +149,24 @@ class LibraryViewModel @Inject constructor(
             )
         }
 
-        // Agrupación por artista con fallback de miniatura y ordenamiento según sortOrder
-        val rawArtistItems = allLibraryTracks
+        // Agrupación por artista con fallback de miniatura y ordenamiento según sortOrder (filtrado a canciones guardadas/descargadas)
+        val artistSourceTracks = allLibraryTracks.filter { it.isSaved || it.isDownloaded }
+        val rawArtistItems = artistSourceTracks
             .groupBy { it.artistName }
             .map { (artistName, trackList) ->
                 val entity = artistEntities.firstOrNull { it.name.equals(artistName, ignoreCase = true) }
-                val thumb = entity?.thumbnailUrl
-                    ?: trackList.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
+                val firstValidThumbTrack = trackList.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }
+                val firstTrack = trackList.firstOrNull()
+                val thumb = entity?.thumbnailUrl?.takeIf { it.isNotBlank() }
+                    ?: firstValidThumbTrack?.thumbnailUrl?.takeIf { it.isNotBlank() }
+                    ?: firstTrack?.let { "https://i.ytimg.com/vi/${it.id}/hqdefault.jpg" }
+                val firstTrackId = firstValidThumbTrack?.id ?: firstTrack?.id
                 val maxTimestamp = trackList.maxOfOrNull { it.timestamp } ?: 0L
                 ArtistItem(
                     name = artistName,
                     trackCount = trackList.size,
                     thumbnailUrl = thumb,
-                    firstTrackId = null,
+                    firstTrackId = firstTrackId,
                     latestTimestamp = maxTimestamp
                 )
             }
@@ -169,7 +178,7 @@ class LibraryViewModel @Inject constructor(
 
         val filtered = when {
             filter.artist != null -> {
-                val artistTracks = allLibraryTracks.filter { it.artistName.equals(filter.artist, ignoreCase = true) }
+                val artistTracks = artistSourceTracks.filter { it.artistName.equals(filter.artist, ignoreCase = true) }
                 when (filter.sortOrder) {
                     LibrarySortOrder.RECENTLY_ADDED -> artistTracks.sortedByDescending { it.timestamp }
                     LibrarySortOrder.ALPHABETICAL -> artistTracks.sortedWith(
@@ -234,6 +243,17 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    fun renamePlaylist(id: Long, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            libraryRepository.renamePlaylist(id, trimmed)
+            if (_selectedPlaylistId.value == id) {
+                _selectedPlaylistName.value = trimmed
+            }
+        }
+    }
+
     fun addSongToPlaylist(playlistId: Long, track: Track) {
         viewModelScope.launch {
             libraryRepository.addSongToPlaylist(playlistId, track)
@@ -250,6 +270,43 @@ class LibraryViewModel @Inject constructor(
     fun removeSongFromPlaylist(playlistId: Long, trackId: String) {
         viewModelScope.launch {
             libraryRepository.removeSongFromPlaylist(playlistId, trackId)
+        }
+    }
+
+    fun refreshMetadata(tracks: List<TrackEntity>, onComplete: () -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            for (track in tracks) {
+                try {
+                    val res = streamResolver.resolveMetadata(track.id)
+                    res.onSuccess { meta ->
+                        val cleanTitle = meta.title.takeIf { it.isNotBlank() && !it.startsWith("Pista ") && it != "Desconocido" } ?: track.title
+                        val cleanArtist = meta.artistName.takeIf { it.isNotBlank() && it != "Desconocido" && it != "Artista Desconocido" } ?: track.artistName
+                        val cleanDuration = if (meta.durationMs > 0) meta.durationMs else track.durationMs
+                        val cleanThumb = if (!meta.thumbnailUrl.isNullOrBlank()) meta.thumbnailUrl else track.thumbnailUrl
+
+                        trackDao.updateTrack(
+                            track.copy(
+                                title = cleanTitle,
+                                artistName = cleanArtist,
+                                durationMs = cleanDuration,
+                                thumbnailUrl = cleanThumb
+                            )
+                        )
+
+                        if (cleanArtist.isNotBlank() && cleanArtist != "Desconocido" && cleanArtist != "Artista Desconocido") {
+                            val existingArtist = artistDao.getArtistSync(cleanArtist)
+                            if (existingArtist == null && !cleanThumb.isNullOrBlank()) {
+                                artistDao.insertArtist(ArtistEntity(name = cleanArtist, thumbnailUrl = cleanThumb))
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("LibraryViewModel", "Error al refrescar metadatos de ${track.id}: ${e.message}")
+                }
+            }
+            withContext(Dispatchers.Main) {
+                onComplete()
+            }
         }
     }
 
@@ -284,6 +341,317 @@ class LibraryViewModel @Inject constructor(
     fun deleteArtist(artistName: String) {
         viewModelScope.launch(Dispatchers.IO) {
             libraryRepository.deleteArtist(artistName)
+        }
+    }
+
+    fun renameArtist(oldName: String, newName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            libraryRepository.renameArtist(oldName, newName)
+            if (_selectedArtist.value.equals(oldName, ignoreCase = true)) {
+                _selectedArtist.value = newName.trim()
+            }
+        }
+    }
+
+    fun mergeArtists(sourceArtist: String, targetArtist: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            libraryRepository.mergeArtists(sourceArtist, targetArtist)
+            if (_selectedArtist.value.equals(sourceArtist, ignoreCase = true)) {
+                _selectedArtist.value = targetArtist.trim()
+            }
+        }
+    }
+
+    fun updateArtistCover(context: Context, artistName: String, uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val coversDir = java.io.File(context.filesDir, "artist_covers")
+                if (!coversDir.exists()) coversDir.mkdirs()
+                val safeName = artistName.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                val destFile = java.io.File(coversDir, "$safeName.jpg")
+
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    destFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                val fileUri = Uri.fromFile(destFile).toString()
+                libraryRepository.updateArtistThumbnail(artistName, fileUri)
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "Error actualizando portada de artista: ${e.message}", e)
+            }
+        }
+    }
+
+    fun updatePlaylistCover(context: Context, playlistId: Long, uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val coversDir = java.io.File(context.filesDir, "playlist_covers")
+                if (!coversDir.exists()) coversDir.mkdirs()
+                val destFile = java.io.File(coversDir, "$playlistId.jpg")
+
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    destFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                val fileUri = Uri.fromFile(destFile).toString()
+                libraryRepository.updatePlaylistThumbnail(playlistId, fileUri)
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "Error actualizando portada de playlist: ${e.message}", e)
+            }
+        }
+    }
+
+    fun batchSmartParse(tracks: List<TrackEntity>, onComplete: (updatedCount: Int) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            var updated = 0
+            for (track in tracks) {
+                val (cleanTitle, cleanArtist) = TrackMetadataParser.parse(track.title, track.artistName)
+                if (cleanTitle != track.title || cleanArtist != track.artistName) {
+                    libraryRepository.updateTrackMetadata(track.id, cleanTitle, cleanArtist)
+                    updated++
+                }
+            }
+            withContext(Dispatchers.Main) {
+                onComplete(updated)
+            }
+        }
+    }
+
+    fun updateTrackMetadata(trackId: String, title: String, artistName: String) {
+        viewModelScope.launch {
+            libraryRepository.updateTrackMetadata(trackId, title, artistName)
+        }
+    }
+
+    fun exportFullLibraryToUri(
+        context: Context,
+        uri: Uri,
+        onComplete: (Boolean) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val allTracks = trackDao.getSavedTracksSync()
+                val allArtists = artistDao.getAllArtistsSync()
+                val allPlaylists = playlistDao.getAllPlaylistsSync()
+
+                val fullBackup = FullLibraryBackupDto(
+                    version = 1,
+                    timestamp = System.currentTimeMillis(),
+                    tracks = allTracks.map {
+                        TrackExportDto(
+                            videoId = it.id,
+                            title = it.title,
+                            artist = it.artistName,
+                            thumbnailUrl = it.thumbnailUrl,
+                            durationMs = it.durationMs,
+                            albumName = it.albumName
+                        )
+                    },
+                    artists = allArtists.map {
+                        ArtistBackupDto(
+                            name = it.name,
+                            thumbnailUrl = it.thumbnailUrl,
+                            artistThumbnailUrl = it.thumbnailUrl
+                        )
+                    },
+                    playlists = allPlaylists.map { p ->
+                        val pSongs = playlistDao.getSongsForPlaylistSync(p.id)
+                        PlaylistExportDto(
+                            name = p.name,
+                            thumbnailUrl = p.thumbnailUrl,
+                            playlistThumbnailUrl = p.thumbnailUrl,
+                            tracks = pSongs.map { s ->
+                                TrackExportDto(
+                                    videoId = s.id,
+                                    title = s.title,
+                                    artist = s.artistName,
+                                    thumbnailUrl = s.thumbnailUrl,
+                                    durationMs = s.durationMs,
+                                    albumName = s.albumName
+                                )
+                            }
+                        )
+                    }
+                )
+
+                val jsonString = Json { prettyPrint = true; ignoreUnknownKeys = true }.encodeToString(
+                    FullLibraryBackupDto.serializer(),
+                    fullBackup
+                )
+                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    outputStream.write(jsonString.toByteArray(Charsets.UTF_8))
+                }
+                withContext(Dispatchers.Main) { onComplete(true) }
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "Error al exportar biblioteca completa: ${e.message}", e)
+                withContext(Dispatchers.Main) { onComplete(false) }
+            }
+        }
+    }
+
+    fun importFullLibraryFromUri(
+        context: Context,
+        uri: Uri,
+        onResult: (success: Boolean, message: String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val jsonString = context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                } ?: throw IllegalStateException("No se pudo abrir el archivo seleccionado.")
+
+                val cleanedJson = jsonString.trim().removePrefix("\uFEFF").trim()
+                if (cleanedJson.isEmpty()) {
+                    throw IllegalStateException("El archivo seleccionado está vacío.")
+                }
+
+                val json = Json {
+                    ignoreUnknownKeys = true
+                    isLenient = true
+                    coerceInputValues = true
+                }
+
+                val jsonElement = json.parseToJsonElement(cleanedJson)
+                var importedTracksCount = 0
+                var importedPlaylistsCount = 0
+
+                // Caso 1: FullLibraryBackupDto (tiene "tracks" o "artists")
+                if (jsonElement is JsonObject && ("tracks" in jsonElement || "artists" in jsonElement)) {
+                    val fullBackup = json.decodeFromJsonElement(FullLibraryBackupDto.serializer(), jsonElement)
+
+                    for (trackDto in fullBackup.tracks) {
+                        val videoId = trackDto.videoId.trim()
+                        if (videoId.isEmpty()) continue
+
+                        val existing = trackDao.getTrackSync(videoId)
+                        val thumbUrl = trackDto.thumbnailUrl?.takeIf { it.isNotBlank() }
+                            ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+                        if (existing == null) {
+                            val newEntity = TrackEntity(
+                                id = videoId,
+                                title = trackDto.title.ifBlank { "Sin título" },
+                                artistName = trackDto.artist.ifBlank { "Desconocido" },
+                                albumName = trackDto.albumName ?: "Sencillos",
+                                durationMs = trackDto.durationMs,
+                                thumbnailUrl = thumbUrl,
+                                isSaved = true,
+                                isDownloaded = false,
+                                timestamp = System.currentTimeMillis()
+                            )
+                            trackDao.insertTrack(newEntity)
+                            importedTracksCount++
+                        } else {
+                            val updatedTitle = if (trackDto.title.isNotBlank() && !trackDto.title.startsWith("Pista ") && trackDto.title != "Desconocido") trackDto.title else existing.title
+                            val updatedArtist = if (trackDto.artist.isNotBlank() && trackDto.artist != "Desconocido" && trackDto.artist != "Artista Desconocido") trackDto.artist else existing.artistName
+                            val updatedDuration = if (trackDto.durationMs > 0) trackDto.durationMs else existing.durationMs
+                            val updatedThumb = if (!thumbUrl.isNullOrBlank()) thumbUrl else existing.thumbnailUrl
+                            trackDao.updateTrack(
+                                existing.copy(
+                                    title = updatedTitle,
+                                    artistName = updatedArtist,
+                                    durationMs = updatedDuration,
+                                    thumbnailUrl = updatedThumb,
+                                    isSaved = true
+                                )
+                            )
+                        }
+                    }
+
+                    for (artistDto in fullBackup.artists) {
+                        val artistName = artistDto.name.trim()
+                        if (artistName.isEmpty()) continue
+                        val thumb = artistDto.artistThumbnailUrl?.takeIf { it.isNotBlank() }
+                            ?: artistDto.thumbnailUrl?.takeIf { it.isNotBlank() }
+                        val existingArtist = artistDao.getArtistSync(artistName)
+                        if (existingArtist == null) {
+                            artistDao.insertArtist(
+                                ArtistEntity(
+                                    name = artistName,
+                                    thumbnailUrl = thumb
+                                )
+                            )
+                        } else if (existingArtist.thumbnailUrl.isNullOrBlank() && !thumb.isNullOrBlank()) {
+                            artistDao.insertArtist(
+                                existingArtist.copy(thumbnailUrl = thumb)
+                            )
+                        }
+                    }
+
+                    val existingPlaylists = playlistDao.getAllPlaylistsSync()
+                    for (p in fullBackup.playlists) {
+                        val playlistName = p.name.trim().ifEmpty { "Playlist Importada" }
+                        val thumb = p.playlistThumbnailUrl?.takeIf { it.isNotBlank() }
+                            ?: p.thumbnailUrl?.takeIf { it.isNotBlank() }
+                        val existingPlaylist = existingPlaylists.firstOrNull { it.name.equals(playlistName, ignoreCase = true) }
+                        val playlistId = existingPlaylist?.id ?: playlistDao.insertPlaylist(
+                            PlaylistEntity(
+                                name = playlistName,
+                                thumbnailUrl = thumb
+                            )
+                        )
+                        if (existingPlaylist != null && existingPlaylist.thumbnailUrl.isNullOrBlank() && !thumb.isNullOrBlank()) {
+                            playlistDao.updatePlaylistThumbnail(existingPlaylist.id, thumb)
+                        }
+                        if (existingPlaylist == null) importedPlaylistsCount++
+
+                        for (trackDto in p.tracks) {
+                            val videoId = trackDto.videoId.trim()
+                            if (videoId.isEmpty()) continue
+
+                            val thumbUrl = trackDto.thumbnailUrl?.takeIf { it.isNotBlank() }
+                                ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+                            val existingTrack = trackDao.getTrackSync(videoId)
+                            if (existingTrack == null) {
+                                trackDao.insertTrack(
+                                    TrackEntity(
+                                        id = videoId,
+                                        title = trackDto.title.ifBlank { "Sin título" },
+                                        artistName = trackDto.artist.ifBlank { "Desconocido" },
+                                        albumName = trackDto.albumName ?: "Sencillos",
+                                        durationMs = trackDto.durationMs,
+                                        thumbnailUrl = thumbUrl,
+                                        isSaved = false,
+                                        timestamp = System.currentTimeMillis()
+                                    )
+                                )
+                            } else {
+                                val updatedTitle = if (trackDto.title.isNotBlank() && !trackDto.title.startsWith("Pista ") && trackDto.title != "Desconocido") trackDto.title else existingTrack.title
+                                val updatedArtist = if (trackDto.artist.isNotBlank() && trackDto.artist != "Desconocido" && trackDto.artist != "Artista Desconocido") trackDto.artist else existingTrack.artistName
+                                val updatedDuration = if (trackDto.durationMs > 0) trackDto.durationMs else existingTrack.durationMs
+                                val updatedThumb = if (!thumbUrl.isNullOrBlank()) thumbUrl else existingTrack.thumbnailUrl
+                                trackDao.updateTrack(
+                                    existingTrack.copy(
+                                        title = updatedTitle,
+                                        artistName = updatedArtist,
+                                        durationMs = updatedDuration,
+                                        thumbnailUrl = updatedThumb
+                                    )
+                                )
+                            }
+                            playlistDao.insertSongToPlaylist(
+                                PlaylistSongCrossRef(
+                                    playlistId = playlistId,
+                                    trackId = videoId,
+                                    addedAt = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                    }
+
+                    val msg = "Biblioteca importada: $importedTracksCount canciones y $importedPlaylistsCount playlists nuevas"
+                    withContext(Dispatchers.Main) { onResult(true, msg) }
+                    return@launch
+                }
+
+                // Caso 2: Importación de playlists únicamente (fallback compatible)
+                importPlaylistsFromUri(context, uri, onResult)
+            } catch (e: Exception) {
+                Log.e("LibraryViewModel", "Fallo al importar biblioteca: ", e)
+                val errorMsg = e.localizedMessage ?: e.message ?: "Error desconocido"
+                withContext(Dispatchers.Main) { onResult(false, "Fallo al importar: $errorMsg") }
+            }
         }
     }
 
@@ -410,7 +778,7 @@ class LibraryViewModel @Inject constructor(
                     val newPlaylistId = playlistDao.insertPlaylist(
                         PlaylistEntity(
                             name = playlistName,
-                            thumbnailUrl = p.thumbnailUrl?.takeIf { it.isNotBlank() }
+                            thumbnailUrl = (p.playlistThumbnailUrl ?: p.thumbnailUrl)?.takeIf { it.isNotBlank() }
                         )
                     )
 
@@ -418,6 +786,8 @@ class LibraryViewModel @Inject constructor(
                         val videoId = trackDto.videoId.trim()
                         if (videoId.isEmpty()) continue
 
+                        val thumbUrl = trackDto.thumbnailUrl?.takeIf { it.isNotBlank() }
+                            ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
                         val existing = trackDao.getTrackSync(videoId)
                         if (existing == null) {
                             val isRealAlbum = !trackDto.albumName.isNullOrBlank() &&
@@ -432,7 +802,7 @@ class LibraryViewModel @Inject constructor(
                                 artistName = trackDto.artist.ifBlank { "Desconocido" },
                                 albumName = effectiveAlbum,
                                 durationMs = trackDto.durationMs,
-                                thumbnailUrl = trackDto.thumbnailUrl,
+                                thumbnailUrl = thumbUrl,
                                 format = null,
                                 isDownloaded = false,
                                 isSaved = false,
@@ -440,6 +810,19 @@ class LibraryViewModel @Inject constructor(
                                 timestamp = System.currentTimeMillis()
                             )
                             trackDao.insertTrack(newEntity)
+                        } else {
+                            val updatedTitle = if (trackDto.title.isNotBlank() && !trackDto.title.startsWith("Pista ") && trackDto.title != "Desconocido") trackDto.title else existing.title
+                            val updatedArtist = if (trackDto.artist.isNotBlank() && trackDto.artist != "Desconocido" && trackDto.artist != "Artista Desconocido") trackDto.artist else existing.artistName
+                            val updatedDuration = if (trackDto.durationMs > 0) trackDto.durationMs else existing.durationMs
+                            val updatedThumb = if (!thumbUrl.isNullOrBlank()) thumbUrl else existing.thumbnailUrl
+                            trackDao.updateTrack(
+                                existing.copy(
+                                    title = updatedTitle,
+                                    artistName = updatedArtist,
+                                    durationMs = updatedDuration,
+                                    thumbnailUrl = updatedThumb
+                                )
+                            )
                         }
 
                         playlistDao.insertSongToPlaylist(
@@ -451,11 +834,12 @@ class LibraryViewModel @Inject constructor(
                         )
                     }
 
-                    val thumb = p.thumbnailUrl
+                    val thumb = (p.playlistThumbnailUrl ?: p.thumbnailUrl)?.takeIf { it.isNotBlank() }
                     if (!thumb.isNullOrBlank()) {
                         playlistDao.updatePlaylistThumbnail(newPlaylistId, thumb)
                     } else {
                         val firstThumb = p.tracks.firstOrNull { !it.thumbnailUrl.isNullOrBlank() }?.thumbnailUrl
+                            ?: p.tracks.firstOrNull()?.let { "https://i.ytimg.com/vi/${it.videoId}/hqdefault.jpg" }
                         if (!firstThumb.isNullOrBlank()) {
                             playlistDao.updatePlaylistThumbnail(newPlaylistId, firstThumb)
                         }
